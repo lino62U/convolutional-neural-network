@@ -58,7 +58,7 @@ struct TensorND {
                 --d;
             }
             if (d < 0) break;
-            if (++count > 1000) break; // evitar impresión excesiva
+            if (++count > 1000) break;
         }
     }
 };
@@ -144,18 +144,23 @@ TensorND convolveND(const TensorND& input, const TensorND& kernel, const vector<
 
 int main(int argc, char* argv[]) {
     if (argc < 4) {
-        cout << "Uso: " << argv[0] << " <dim> <num_filters> <padding yes|no> <input_shape...> <kernel_shape...> <stride...>\n";
+        cout << "Uso: " << argv[0] << " <dim> <num_filters> <padding valid|same> <input_shape...> <kernel_shape...> <stride...>\n";
         return 1;
     }
 
     int idx = 1;
     int dim = stoi(argv[idx++]);
     int num_filters = stoi(argv[idx++]);
-    string pad_flag = argv[idx++];
-    bool use_padding = (pad_flag == "yes");
+    string padding_mode = argv[idx++];
 
-    if (argc != 1 + 3 * dim + 3) {
-        cout << "Error: se esperaban " << 1 + 3 * dim + 2 << " argumentos.\n";
+    if (padding_mode != "valid" && padding_mode != "same") {
+        cerr << "Error: padding debe ser 'valid' o 'same'.\n";
+        return 1;
+    }
+
+    int expected_args = 1 + 3 + dim * 3;
+    if (argc != expected_args) {
+        cout << "Error: se esperaban " << expected_args << " argumentos, pero se recibieron " << argc << ".\n";
         return 1;
     }
 
@@ -163,6 +168,26 @@ int main(int argc, char* argv[]) {
     for (int i = 0; i < dim; ++i) input_shape[i] = stoi(argv[idx++]);
     for (int i = 0; i < dim; ++i) kernel_shape[i] = stoi(argv[idx++]);
     for (int i = 0; i < dim; ++i) stride[i] = stoi(argv[idx++]);
+
+    // Utilidad para imprimir vector como 3x3x3
+    auto vec_to_str = [](const vector<int>& vec) {
+        string s;
+        for (size_t i = 0; i < vec.size(); ++i) {
+            s += to_string(vec[i]);
+            if (i != vec.size() - 1) s += "x";
+        }
+        return s;
+    };
+
+    // Información general
+    cout << "======== CONFIGURACIÓN DE LA CONVOLUCIÓN ========\n";
+    cout << "Dimensiones: " << dim << "\n";
+    cout << "Tamaño de entrada: " << vec_to_str(input_shape) << "\n";
+    cout << "Tamaño del kernel: " << vec_to_str(kernel_shape) << "\n";
+    cout << "Stride: " << vec_to_str(stride) << "\n";
+    cout << "Padding: " << padding_mode << "\n";
+    cout << "Número de filtros: " << num_filters << "\n";
+    cout << "=================================================\n";
 
     srand(time(0));
 
@@ -177,14 +202,16 @@ int main(int argc, char* argv[]) {
     }
 
     TensorND padded_input = input;
-    if (use_padding) {
+    if (padding_mode == "same") {
         vector<int> pad(dim);
-        for (int i = 0; i < dim; ++i)
-            pad[i] = kernel_shape[i] / 2;
+        for (int i = 0; i < dim; ++i) {
+            int total_pad = max(kernel_shape[i] - 1, 0);
+            pad[i] = total_pad / 2;
+        }
         padded_input = applyPadding(input, pad);
     }
 
-    input.print("Entrada");
+    input.print("Tensor de Entrada");
 
     vector<TensorND> outputs;
     for (int f = 0; f < num_filters; ++f) {
