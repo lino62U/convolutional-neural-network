@@ -66,6 +66,7 @@ Matrix generateRandomInput(int h, int w) {
     return input;
 }
 
+/*/
 int main(int argc, char* argv[]) {
     if (argc != 7) {
         cout << "Uso: " << argv[0] << " <num_filtros> <kernel_size> <stride> <padding_type: valid|none> <input_height> <input_width>\n";
@@ -111,3 +112,4 @@ int main(int argc, char* argv[]) {
 
     return 0;
 }
+*/

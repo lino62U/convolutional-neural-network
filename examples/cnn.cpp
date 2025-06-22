@@ -142,6 +142,7 @@ TensorND convolveND(const TensorND& input, const TensorND& kernel, const vector<
     return output;
 }
 
+/*
 int main(int argc, char* argv[]) {
     if (argc < 4) {
         cout << "Uso: " << argv[0] << " <dim> <num_filters> <padding valid|same> <input_shape...> <kernel_shape...> <stride...>\n";
@@ -223,3 +224,4 @@ int main(int argc, char* argv[]) {
 
     return 0;
 }
+*/

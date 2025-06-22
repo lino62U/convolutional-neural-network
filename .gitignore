@@ -1,0 +1,38 @@
+# Compilación CMake
+/build/
+/CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# Binarios y objetos
+*.o
+*.obj
+*.so
+*.a
+*.exe
+*.out
+
+# Archivos temporales de edición
+*~
+*.swp
+*.bak
+
+# Archivos de logs y depuración
+*.log
+*.trace
+
+# VSCode
+.vscode/
+
+# Archivos de sistema
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Archivos de test
+/test-results/
+/*.test
+
+# Otros
+compile_commands.json
