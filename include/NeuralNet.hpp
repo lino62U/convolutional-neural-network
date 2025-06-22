@@ -1,5 +1,4 @@
-#ifndef NEURALNET_HPP
-#define NEURALNET_HPP
+#pragma once
 
 // Core
 #include "core/Tensor.hpp"
@@ -31,4 +30,6 @@
 #include "utils/DatasetLoader.hpp"
 #include "utils/Logger.hpp"
 
-#endif // NEURALNET_HPP
+
+// include/metrics/Metric.hpp
+#include "metrics/Metric.hpp"

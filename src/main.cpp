@@ -1,37 +1,56 @@
 #include "NeuralNet.hpp"
+
 #include <iostream>
 #include <memory>
 
 int main() {
-    // Crear modelo CNN para MNIST
+    std::cout << "🚀 Inicio del programa\n";
+
+    // Cargar datos con límite para depuración
+    Tensor train_X, train_y, test_X, test_y;
+    std::cout << "📦 Cargando datos MNIST...\n";
+    DataLoader::load_mnist_data(train_X, train_y, test_X, test_y, 1000, 200);
+    std::cout << "✅ Datos cargados exitosamente\n";
+
+    // Crear modelo CNN
+    std::cout << "🧠 Creando modelo CNN...\n";
     Model model;
+    auto init = std::make_shared<XavierInitializer>();
 
-    // Capa convolucional: 1 canal de entrada, 8 filtros de 3x3
-    model.add(std::make_shared<Conv2D>(1, 8, 3, 3));
+    model.add(std::make_shared<Conv2D>(1, 8, 3, 3, 1, 1, "same"));
     model.add(std::make_shared<ReLU>());
+    model.add(std::make_shared<MaxPooling2D>(2, 2));
 
-    // Capa densa 1: salida 128 neuronas (después de flatten)
-    model.add(std::make_shared<Flatten>()); // (faltaría implementar esta clase)
-    model.add(std::make_shared<Dense>(8 * 26 * 26, 128, new XavierInitializer()));
+    model.add(std::make_shared<Conv2D>(8, 16, 3, 3, 1, 1, "same"));
     model.add(std::make_shared<ReLU>());
+    model.add(std::make_shared<MaxPooling2D>(2, 2));
 
-    // Capa de salida con 10 clases (dígitos del 0 al 9)
-    model.add(std::make_shared<Dense>(128, 10, new XavierInitializer()));
+    model.add(std::make_shared<Flatten>());
+    model.add(std::make_shared<Dense>(16 * 7 * 7, 64, init.get()));
+    model.add(std::make_shared<ReLU>());
+    model.add(std::make_shared<Dense>(64, 10, init.get()));
     model.add(std::make_shared<Softmax>());
 
-    // Compilar el modelo con pérdida y optimizador
-    model.compile(
-        std::make_shared<CrossEntropyLoss>(),
-        std::make_shared<Adam>(0.001f)
-    );
+    std::cout << "✅ Modelo creado\n";
 
-    // Cargar datos (ficticio, necesitarías implementarlo)
-    Tensor train_images; // cargar imágenes MNIST como tensores
-    Tensor train_labels; // etiquetas one-hot
+    // Compilar modelo
+    auto loss_fn = std::make_shared<CrossEntropyLoss>();
+    auto optimizer = std::make_shared<Adam>(0.001f);
+    auto accuracy = std::make_shared<Accuracy>();
 
-    // Entrenar
-    model.fit(train_images, train_labels, 10, 64); // ✅
+    std::cout << "🔧 Compilando modelo...\n";
+    model.compile(loss_fn, optimizer, {accuracy});
+    std::cout << "✅ Compilado correctamente\n";
 
+    // Entrenar modelo
+    std::cout << "🏋️ Entrenando modelo...\n";
+    model.fit(train_X, train_y, 2, 64, &test_X, &test_y);  // solo 2 épocas para prueba
+    std::cout << "✅ Entrenamiento terminado\n";
+
+    // Evaluar modelo final
+    std::cout << "📊 Evaluando modelo...\n";
+    float final_acc = model.evaluate(test_X, test_y);
+    std::cout << "🔍 Accuracy final en test: " << final_acc << std::endl;
 
     return 0;
 }

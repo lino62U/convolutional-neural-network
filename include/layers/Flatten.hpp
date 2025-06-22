@@ -12,19 +12,24 @@ private:
 public:
     Tensor forward(const Tensor& input) override {
         input_shape = input.shape;
-        int flat_size = 1;
-        for (int dim : input.shape) {
-            flat_size *= dim;
+
+        if (input.shape.size() < 2)
+            throw std::invalid_argument("Flatten expects at least 2D input");
+
+        int batch = input.shape[0];
+        int feature_dim = 1;
+        for (size_t i = 1; i < input.shape.size(); ++i) {
+            feature_dim *= input.shape[i];
         }
 
-        Tensor output({flat_size});
-        output.data = input.data; // Copia directa
+        Tensor output({batch, feature_dim});
+        output.data = input.data;
         return output;
     }
 
     Tensor backward(const Tensor& grad_output) override {
         Tensor grad_input(input_shape);
-        grad_input.data = grad_output.data; // Restaurar forma
+        grad_input.data = grad_output.data;
         return grad_input;
     }
 

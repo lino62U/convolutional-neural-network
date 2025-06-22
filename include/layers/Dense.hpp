@@ -1,62 +1,80 @@
-// include/layers/Dense.hpp
 #pragma once
 
 #include "core/Layer.hpp"
 #include "core/Initializer.hpp"
-#include <random>
+#include "optimizers/Optimizer.hpp"
 #include <stdexcept>
-#include <numeric>
-#include <functional>
 
 class Dense : public Layer {
 private:
-    Tensor weights;
-    Tensor bias;
-    Tensor input_cache;
-    Tensor grad_weights;
-    Tensor grad_bias;
+    Tensor weights;       // [in_features, out_features]
+    Tensor bias;          // [out_features]
+    Tensor input_cache;   // [batch, in_features]
+    Tensor grad_weights;  // [in_features, out_features]
+    Tensor grad_bias;     // [out_features]
 
 public:
-    Dense(int input_size, int output_size, Initializer* initializer) {
-        weights = Tensor({input_size, output_size});
-        bias = Tensor({output_size});
-        grad_weights = Tensor({input_size, output_size});
-        grad_bias = Tensor({output_size});
-        if (initializer) {
-            initializer->initialize(weights);
-        }
+    Dense(int in_features, int out_features, Initializer* initializer) {
+        weights = Tensor({in_features, out_features});
+        bias = Tensor({out_features});
+        grad_weights = Tensor({in_features, out_features});
+        grad_bias = Tensor({out_features});
+        if (initializer) initializer->initialize(weights);
     }
 
     Tensor forward(const Tensor& input) override {
-        if (input.shape.size() != 1 || input.shape[0] != weights.shape[0]) {
-            throw std::invalid_argument("Dense::forward - tamaño de entrada incorrecto");
-        }
+        if (input.shape.size() != 2 || input.shape[1] != weights.shape[0])
+            throw std::invalid_argument("Dense::forward - input must be [batch, in_features]");
 
         input_cache = input;
-        Tensor output({weights.shape[1]}); // output_size
 
-        for (int j = 0; j < weights.shape[1]; ++j) {
-            output[j] = bias[j];
-            for (int i = 0; i < weights.shape[0]; ++i) {
-                output[j] += input[i] * weights[i * weights.shape[1] + j];
+        // output = input · weights + bias (broadcast)
+        Tensor output = input.dot(weights); // [batch, out_features]
+        int batch = output.shape[0];
+        int out_f = output.shape[1];
+        for (int b = 0; b < batch; ++b) {
+            for (int j = 0; j < out_f; ++j) {
+                output.at({b, j}) += bias.at({j});
             }
         }
+
         return output;
     }
 
     Tensor backward(const Tensor& grad_output) override {
-        Tensor grad_input({weights.shape[0]}); // input_size
+        int batch = grad_output.shape[0];
+        int in_f = weights.shape[0];
+        int out_f = weights.shape[1];
 
-        for (int i = 0; i < weights.shape[0]; ++i) {
-            grad_input[i] = 0.0f;
-            for (int j = 0; j < weights.shape[1]; ++j) {
-                grad_input[i] += grad_output[j] * weights[i * weights.shape[1] + j];
-                grad_weights[i * weights.shape[1] + j] = input_cache[i] * grad_output[j];
+        Tensor grad_input({batch, in_f});
+        grad_weights.fill(0.0f);
+        grad_bias.fill(0.0f);
+
+        // grad_input = grad_output · W^T
+        for (int b = 0; b < batch; ++b) {
+            for (int i = 0; i < in_f; ++i) {
+                float sum = 0.0f;
+                for (int j = 0; j < out_f; ++j) {
+                    sum += grad_output.at({b, j}) * weights.at({i, j});
+                }
+                grad_input.at({b, i}) = sum;
             }
         }
 
-        for (int j = 0; j < weights.shape[1]; ++j) {
-            grad_bias[j] = grad_output[j];
+        // grad_weights = input^T · grad_output
+        for (int i = 0; i < in_f; ++i) {
+            for (int j = 0; j < out_f; ++j) {
+                for (int b = 0; b < batch; ++b) {
+                    grad_weights.at({i, j}) += input_cache.at({b, i}) * grad_output.at({b, j});
+                }
+            }
+        }
+
+        // grad_bias = suma sobre la dimensión batch
+        for (int j = 0; j < out_f; ++j) {
+            for (int b = 0; b < batch; ++b) {
+                grad_bias[j] += grad_output.at({b, j});
+            }
         }
 
         return grad_input;
