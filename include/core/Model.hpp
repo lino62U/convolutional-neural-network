@@ -33,7 +33,88 @@ public:
         logger = log;
     }
 
-    void fit(const Tensor& X, const Tensor& y, int epochs, int batch_size,
+     void fit(const Tensor& X, const Tensor& y, int epochs, int batch_size,
+             const Tensor* X_val = nullptr, const Tensor* y_val = nullptr) {
+
+        int num_samples = X.shape[0];
+
+        for (int epoch = 0; epoch < epochs; ++epoch) {
+            float total_loss = 0.0f;
+            std::vector<float> total_metrics(metrics.size(), 0.0f);
+            int batches = 0;
+
+            for (int i = 0; i < num_samples; i += batch_size) {
+                int end = std::min(i + batch_size, num_samples);
+
+                Tensor X_batch = X.slice(i, end);
+                Tensor y_batch = y.slice(i, end);
+
+                // --- Forward ---
+                Tensor out = X_batch;
+                for (auto& layer : layers)
+                    out = layer->forward(out);
+
+                float loss_value = loss->compute(out, y_batch);
+                total_loss += loss_value;
+
+                for (size_t m = 0; m < metrics.size(); ++m)
+                    total_metrics[m] += metrics[m]->compute(y_batch, out);
+
+                batches++;
+
+                // --- Backward ---
+                Tensor grad = loss->gradient(out, y_batch);
+                for (auto it = layers.rbegin(); it != layers.rend(); ++it)
+                    grad = (*it)->backward(grad);
+
+                // --- Update ---
+                for (auto& layer : layers)
+                    layer->update_weights(optimizer.get());
+            }
+
+            // Promedios de entrenamiento
+            float avg_loss = total_loss / batches;
+            std::vector<float> avg_metrics;
+            for (float val : total_metrics)
+                avg_metrics.push_back(val / batches);
+
+            // Validación
+            float val_loss = -1.0f;
+            std::vector<float> val_metrics(metrics.size(), -1.0f);
+
+            if (X_val && y_val) {
+                Tensor val_out = *X_val;
+                for (auto& layer : layers)
+                    val_out = layer->forward(val_out);
+
+                val_loss = loss->compute(val_out, *y_val);
+
+                for (size_t m = 0; m < metrics.size(); ++m)
+                    val_metrics[m] = metrics[m]->compute(*y_val, val_out);
+            }
+
+            // Logging
+            if (logger) {
+                logger->log_epoch(epoch + 1, avg_loss, avg_metrics.empty() ? -1.0f : avg_metrics[0],
+                  val_loss, val_metrics.empty() ? -1.0f : val_metrics[0]);
+
+
+            } else {
+                std::cout << "Epoch " << epoch + 1 << "/" << epochs
+                          << " - Loss: " << avg_loss;
+                for (size_t m = 0; m < metrics.size(); ++m)
+                    std::cout << " - " << typeid(*metrics[m]).name() << ": " << avg_metrics[m];
+                if (X_val && y_val) {
+                    std::cout << " - Val Loss: " << val_loss;
+                    for (size_t m = 0; m < metrics.size(); ++m)
+                        std::cout << " - Val " << typeid(*metrics[m]).name() << ": " << val_metrics[m];
+                }
+                std::cout << std::endl;
+            }
+        }
+    }
+
+    void fit2(const Tensor& X, const Tensor& y, int epochs, int batch_size,
          const Tensor* X_val = nullptr, const Tensor* y_val = nullptr) {
 
     int num_samples = X.shape[0];

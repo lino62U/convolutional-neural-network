@@ -17,16 +17,17 @@ int main() {
     Model model;
     auto init = std::make_shared<XavierInitializer>();
 
-    model.add(std::make_shared<Conv2D>(1, 8, 3, 3, 1, 1, "same"));
+    // Conv2D sin padding ("valid"), reduce tamaño
+    model.add(std::make_shared<Conv2D>(1, 8, 3, 3, 1, 1)); // salida: (8, 26, 26)
     model.add(std::make_shared<ReLU>());
-    model.add(std::make_shared<MaxPooling2D>(2, 2));
+    model.add(std::make_shared<MaxPooling2D>(2, 2));       // salida: (8, 13, 13)
 
-    model.add(std::make_shared<Conv2D>(8, 16, 3, 3, 1, 1, "same"));
+    model.add(std::make_shared<Conv2D>(8, 16, 3, 3, 1, 1)); // salida: (16, 11, 11)
     model.add(std::make_shared<ReLU>());
-    model.add(std::make_shared<MaxPooling2D>(2, 2));
+    model.add(std::make_shared<MaxPooling2D>(2, 2));       // salida: (16, 5, 5)
 
     model.add(std::make_shared<Flatten>());
-    model.add(std::make_shared<Dense>(16 * 7 * 7, 64, init.get()));
+    model.add(std::make_shared<Dense>(16 * 5 * 5, 64, init.get())); // entrada ajustada
     model.add(std::make_shared<ReLU>());
     model.add(std::make_shared<Dense>(64, 10, init.get()));
     model.add(std::make_shared<Softmax>());
@@ -44,7 +45,7 @@ int main() {
 
     // Entrenar modelo
     std::cout << "🏋️ Entrenando modelo...\n";
-    model.fit(train_X, train_y, 2, 64, &test_X, &test_y);  // solo 2 épocas para prueba
+    model.fit2(train_X, train_y, 5, 128, &test_X, &test_y);  // solo 2 épocas para prueba
     std::cout << "✅ Entrenamiento terminado\n";
 
     // Evaluar modelo final
