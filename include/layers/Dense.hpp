@@ -22,6 +22,10 @@ public:
         if (initializer) initializer->initialize(weights);
     }
 
+    size_t num_params() const override {
+        return weights.size() + bias.size();
+    }
+
     Tensor forward(const Tensor& input) override {
         if (input.shape.size() != 2 || input.shape[1] != weights.shape[0])
             throw std::invalid_argument("Dense::forward - input must be [batch, in_features]");

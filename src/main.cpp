@@ -1,57 +1,75 @@
 #include "NeuralNet.hpp"
-
 #include <iostream>
 #include <memory>
+#include <stdexcept>
 
 int main() {
-    std::cout << "🚀 Inicio del programa\n";
+    try {
+        std::cout << "🚀 Inicio del programa\n";
 
-    // Cargar datos con límite para depuración
-    Tensor train_X, train_y, test_X, test_y;
-    std::cout << "📦 Cargando datos MNIST...\n";
-    DataLoader::load_mnist_data(train_X, train_y, test_X, test_y, 1000, 200);
-    std::cout << "✅ Datos cargados exitosamente\n";
+        // --- Carga de datos ---
+        Tensor train_X, train_y, test_X, test_y;
+        constexpr int train_samples = 1000;
+        constexpr int test_samples = 200;
 
-    // Crear modelo CNN
-    std::cout << "🧠 Creando modelo CNN...\n";
-    Model model;
-    auto init = std::make_shared<XavierInitializer>();
+        std::cout << "📦 Cargando datos MNIST...\n";
+        DataLoader::load_mnist_data(train_X, train_y, test_X, test_y, train_samples, test_samples);
+        
+        if (train_X.empty() || test_X.empty()) {
+            throw std::runtime_error("Error: Datos MNIST no cargados");
+        }
+        std::cout << "✅ Datos cargados (" << train_X.shape[0] << " train, " 
+                  << test_X.shape[0] << " test)\n";
 
-    // Conv2D sin padding ("valid"), reduce tamaño
-    model.add(std::make_shared<Conv2D>(1, 8, 3, 3, 1, 1)); // salida: (8, 26, 26)
-    model.add(std::make_shared<ReLU>());
-    model.add(std::make_shared<MaxPooling2D>(2, 2));       // salida: (8, 13, 13)
+        // --- Construcción del Modelo ---
+        std::cout << "🧠 Creando modelo CNN...\n";
+        Model model;
+        auto init = std::make_unique<XavierInitializer>();
 
-    model.add(std::make_shared<Conv2D>(8, 16, 3, 3, 1, 1)); // salida: (16, 11, 11)
-    model.add(std::make_shared<ReLU>());
-    model.add(std::make_shared<MaxPooling2D>(2, 2));       // salida: (16, 5, 5)
+        // Capas convolucionales
+        model.add(std::make_shared<Conv2D>(1, 8, 3, 3, 1, 1));  // Output: (8, 26, 26)
+        model.add(std::make_shared<ReLU>());
+        model.add(std::make_shared<MaxPooling2D>(2, 2));        // Output: (8, 13, 13)
 
-    model.add(std::make_shared<Flatten>());
-    model.add(std::make_shared<Dense>(16 * 5 * 5, 64, init.get())); // entrada ajustada
-    model.add(std::make_shared<ReLU>());
-    model.add(std::make_shared<Dense>(64, 10, init.get()));
-    model.add(std::make_shared<Softmax>());
+        model.add(std::make_shared<Conv2D>(8, 16, 3, 3, 1, 1)); // Output: (16, 11, 11)
+        model.add(std::make_shared<ReLU>());
+        model.add(std::make_shared<MaxPooling2D>(2, 2));       // Output: (16, 5, 5)
 
-    std::cout << "✅ Modelo creado\n";
+        // Capas fully connected
+        model.add(std::make_shared<Flatten>());
+        model.add(std::make_shared<Dense>(16 * 5 * 5, 64, init.get()));
+        model.add(std::make_shared<ReLU>());
+        model.add(std::make_shared<Dense>(64, 10, init.get()));
+        model.add(std::make_shared<Softmax>());
 
-    // Compilar modelo
-    auto loss_fn = std::make_shared<CrossEntropyLoss>();
-    auto optimizer = std::make_shared<Adam>(0.001f);
-    auto accuracy = std::make_shared<Accuracy>();
+        std::cout << "✅ Modelo creado (" << model.num_params() << " parámetros)\n";
 
-    std::cout << "🔧 Compilando modelo...\n";
-    model.compile(loss_fn, optimizer, {accuracy});
-    std::cout << "✅ Compilado correctamente\n";
+        // --- Compilación ---
+        auto loss_fn = std::make_shared<CrossEntropyLoss>();
+        auto optimizer = std::make_shared<Adam>(0.001f);
+        auto accuracy = std::make_shared<Accuracy>();
 
-    // Entrenar modelo
-    std::cout << "🏋️ Entrenando modelo...\n";
-    model.fit2(train_X, train_y, 5, 128, &test_X, &test_y);  // solo 2 épocas para prueba
-    std::cout << "✅ Entrenamiento terminado\n";
+        std::cout << "🔧 Compilando modelo...\n";
+        model.compile(loss_fn, optimizer, {accuracy});
+        std::cout << "✅ Modelo compilado\n";
 
-    // Evaluar modelo final
-    std::cout << "📊 Evaluando modelo...\n";
-    float final_acc = model.evaluate(test_X, test_y);
-    std::cout << "🔍 Accuracy final en test: " << final_acc << std::endl;
+        // --- Entrenamiento ---
+        constexpr int epochs = 5;
+        constexpr int batch_size = 128;
+
+        std::cout << "🏋️ Entrenando modelo (" << epochs << " épocas)...\n";
+        model.fit(train_X, train_y, epochs, batch_size, &test_X, &test_y);
+        std::cout << "✅ Entrenamiento completado\n";
+
+        // --- Evaluación Final ---
+        std::cout << "📊 Evaluando modelo con test set...\n";
+        float final_acc = model.evaluate(test_X, test_y);
+        std::cout << "🔍 Accuracy final en test: " << final_acc * 100 << "%\n";
+
+    } catch (const std::exception& e) {
+        std::cerr << "❌ Error: " << e.what() << std::endl;
+        return 1;
+    }
 
     return 0;
 }

@@ -101,5 +101,9 @@ public:
         return grad_input;
     }
 
+    size_t num_params() const override {
+        return 0;  // Estas capas no tienen parámetros entrenables
+    }
+    
     void update_weights(Optimizer* optimizer) override {}
 };

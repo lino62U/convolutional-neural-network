@@ -15,25 +15,25 @@ public:
 class CrossEntropyLoss : public Loss {
 public:
     float compute(const Tensor& y_true, const Tensor& y_pred) override {
-        if (y_true.size() != y_pred.size())
-            throw std::invalid_argument("CrossEntropyLoss::compute: tamaño incompatible.");
-
+        if (y_true.shape != y_pred.shape)
+            throw std::invalid_argument("Shapes must match");
+            
         float loss = 0.0f;
-        for (size_t i = 0; i < y_true.data.size(); ++i) {
-            float p = std::max(std::min(y_pred.data[i], 1.0f - 1e-7f), 1e-7f);  // Evitar log(0)
-            loss -= y_true.data[i] * std::log(p);
+        const float epsilon = 1e-7f;  // Para estabilidad numérica
+        
+        for (size_t i = 0; i < y_pred.size(); ++i) {
+            // Clip para evitar log(0)
+            float p = std::clamp(y_pred[i], epsilon, 1.0f - epsilon);
+            loss += -y_true[i] * std::log(p);
         }
-        return loss / static_cast<float>(y_true.data.size());
+        return loss / static_cast<float>(y_pred.shape[0]);  // Promedio por batch
     }
 
     Tensor gradient(const Tensor& y_true, const Tensor& y_pred) override {
-        if (y_true.size() != y_pred.size())
-            throw std::invalid_argument("CrossEntropyLoss::gradient: tamaño incompatible.");
-
+        // Gradiente combinado Softmax + CrossEntropy
         Tensor grad(y_pred.shape);
-        for (size_t i = 0; i < y_true.data.size(); ++i) {
-            float p = std::max(std::min(y_pred.data[i], 1.0f - 1e-7f), 1e-7f);  // Evitar división por 0
-            grad.data[i] = -y_true.data[i] / p;
+        for (size_t i = 0; i < y_pred.size(); ++i) {
+            grad[i] = y_pred[i] - y_true[i];
         }
         return grad;
     }

@@ -19,6 +19,11 @@ public:
         data.resize(total, 0.0f);
     }
 
+    // Método empty() para verificar si el tensor está vacío
+    bool empty() const {
+        return data.empty();
+    }
+
     float& operator[](size_t idx) {
         if (idx >= data.size()) throw std::out_of_range("Index out of range");
         return data[idx];
@@ -154,7 +159,6 @@ public:
         return result;
     }
 
-    // En Tensor.hpp
     Tensor dot(const Tensor& other) const {
         if (shape.size() != 2 || other.shape.size() != 2)
             throw std::invalid_argument("dot() only supports 2D tensors");

@@ -31,6 +31,10 @@ public:
         grad_bias = Tensor({out_ch});
     }
 
+    size_t num_params() const override {
+        return filters.size() + bias.size();
+    }
+    
     Tensor forward(const Tensor& input) override {
         input_cache = input;
         int batch = input.shape[0];

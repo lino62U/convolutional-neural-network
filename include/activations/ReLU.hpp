@@ -20,4 +20,11 @@ public:
         }
         return grad;
     }
+
+    size_t num_params() const override {
+        return 0;  // ReLU no tiene parámetros entrenables
+    }
+
+    // En ReLU.hpp
+    bool is_softmax() const override { return false; } // Mantener por defecto
 };
