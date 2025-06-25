@@ -4,35 +4,25 @@
 // Declaración adelantada para evitar inclusión circular
 class Softmax;
 
-class Activation : public Layer {
-protected:
-    Tensor input_cache;
 
+// Activation function class
+class Activation {
 public:
-    virtual Tensor activate(const Tensor& x) = 0;
-    virtual Tensor derivative(const Tensor& x) = 0;
-
-    Tensor forward(const Tensor& input) override {
-        input_cache = input;
-        return activate(input);
-    }
-
-    Tensor backward(const Tensor& grad_output) override {
-        // Cambiamos la verificación de tipo a un método virtual
-        if (is_softmax()) {
-            return grad_output; // Caso especial para Softmax
+    virtual float apply(float x) const = 0;
+    virtual float derivative(float x) const = 0;
+    virtual Tensor apply_batch(const Tensor& input) const {
+        std::vector<float> output(input.data.size());
+        for (size_t i = 0; i < input.data.size(); ++i) {
+            output[i] = apply(input.data[i]);
         }
-        Tensor deriv = derivative(input_cache);
-        Tensor grad_input(deriv.shape);
-        for (int i = 0; i < deriv.size(); ++i) {
-            grad_input[i] = grad_output[i] * deriv[i];
-        }
-        return grad_input;
+        return Tensor(output, input.shape);
     }
-
-    virtual bool is_softmax() const { return false; }
-
-    void update_weights(Optimizer*) override {}
-    size_t num_params() const override { return 0; }
-    virtual ~Activation() = default;
+    virtual Tensor derivative_batch(const Tensor& input, const Tensor& output) const {
+        std::vector<float> grad(input.data.size());
+        for (size_t i = 0; i < input.data.size(); ++i) {
+            grad[i] = derivative(input.data[i]);
+        }
+        return Tensor(grad, input.shape);
+    }
+    virtual ~Activation() {}
 };

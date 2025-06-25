@@ -17,15 +17,6 @@ public:
         : learning_rate(lr), decay_rate(decay), epsilon(eps) {}
 
     void update(Tensor& weights, const Tensor& grads) override {
-        Tensor& c = cache[&weights];
-
-        if (c.data.empty()) {
-            c = Tensor(weights.shape);
-        }
-
-        for (int i = 0; i < weights.size(); ++i) {
-            c.data[i] = decay_rate * c.data[i] + (1.0f - decay_rate) * grads.data[i] * grads.data[i];
-            weights.data[i] -= learning_rate * grads.data[i] / (std::sqrt(c.data[i]) + epsilon);
-        }
+        
     }
 };

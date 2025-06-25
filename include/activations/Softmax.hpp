@@ -5,44 +5,48 @@
 #include <numeric>  // para std::transform_reduce
 #include <stdexcept>
 
+
 class Softmax : public Activation {
 public:
-    Tensor activate(const Tensor& x) override {
-        if (x.shape.size() != 2)
-            throw std::invalid_argument("Softmax espera tensor 2D [batch, clases]");
+    float apply(float x) const override {
+        return x; // Not used directly, apply_batch handles the full operation
+    }
 
-        Tensor out(x.shape);
-        int batch = x.shape[0];
-        int num_classes = x.shape[1];
+    float derivative(float x) const override {
+        return 1.0f; // Not used directly, derivative_batch handles it
+    }
 
-        for (int b = 0; b < batch; ++b) {
-            float max_val = -1e9;
-            for (int j = 0; j < num_classes; ++j)
-                max_val = std::max(max_val, x.at({b, j}));
-
-            float sum_exp = 0.0f;
-            for (int j = 0; j < num_classes; ++j)
-                sum_exp += std::exp(x.at({b, j}) - max_val);
-
-            for (int j = 0; j < num_classes; ++j)
-                out.at({b, j}) = std::exp(x.at({b, j}) - max_val) / (sum_exp + 1e-9f);
+    Tensor apply_batch(const Tensor& input) const override {
+        if (input.shape.size() != 2) {
+            throw std::runtime_error("Softmax expects 2D input tensor");
         }
+        int batch_size = input.shape[0];
+        int num_classes = input.shape[1];
+        std::vector<float> output(input.data.size());
 
-        return out;
+        for (int i = 0; i < batch_size; ++i) {
+            // Find max for numerical stability
+            float max_val = *std::max_element(
+                input.data.begin() + i * num_classes,
+                input.data.begin() + (i + 1) * num_classes
+            );
+            // Compute exp and sum
+            float sum_exp = 0.0f;
+            for (int j = 0; j < num_classes; ++j) {
+                int idx = i * num_classes + j;
+                output[idx] = std::exp(input.data[idx] - max_val);
+                sum_exp += output[idx];
+            }
+            // Normalize
+            for (int j = 0; j < num_classes; ++j) {
+                output[i * num_classes + j] /= sum_exp;
+            }
+        }
+        return Tensor(output, input.shape);
     }
 
-
-    Tensor derivative(const Tensor& x) override {
-        // Este método no debería usarse cuando se combina con CrossEntropyLoss
-        throw std::runtime_error(
-            "No usar derivative() de Softmax directamente. "
-            "Usar con CrossEntropyLoss para gradientes automáticos."
-        );
+    Tensor derivative_batch(const Tensor& input, const Tensor& output) const override {
+        // For softmax with cross-entropy, gradient is handled in CrossEntropyLoss
+        return Tensor(std::vector<float>(input.data.size(), 1.0f), input.shape);
     }
-
-    size_t num_params() const override {
-        return 0;  // ReLU no tiene parámetros entrenables
-    }
-
-    bool is_softmax() const override { return true; } // Identificador especial
 };

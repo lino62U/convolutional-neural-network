@@ -20,6 +20,8 @@
 #include "layers/MaxPooling2D.hpp"
 #include "layers/MinPooling2D.hpp"
 #include "layers/AveragePooling2D.hpp"
+#include "layers/Dropout.hpp"
+
 // Puedes agregar más: Flatten, LSTM, RNN, etc.
 
 // Optimizers

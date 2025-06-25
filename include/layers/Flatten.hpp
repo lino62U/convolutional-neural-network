@@ -5,36 +5,34 @@
 #include <numeric>
 #include <stdexcept>
 
+
+// Flatten layer
 class Flatten : public Layer {
-private:
-    std::vector<int> input_shape;
-
 public:
-    Tensor forward(const Tensor& input) override {
-        input_shape = input.shape;
+    Flatten() {}
 
-        if (input.shape.size() < 2)
-            throw std::invalid_argument("Flatten expects at least 2D input");
-
-        int batch = input.shape[0];
-        int feature_dim = 1;
-        for (size_t i = 1; i < input.shape.size(); ++i) {
-            feature_dim *= input.shape[i];
+    Tensor forward(const Tensor& input, bool training = false) override {
+        if (input.shape.size() < 2) {
+            throw std::runtime_error("Flatten expects at least 2D input tensor");
         }
-
-        Tensor output({batch, feature_dim});
-        output.data = input.data;
-        return output;
+        int batch_size = input.shape[0];
+        int flat_size = std::accumulate(input.shape.begin() + 1, input.shape.end(), 1, std::multiplies<int>());
+        input_cache = input;
+        return Tensor(input.data, {batch_size, flat_size});
     }
 
     Tensor backward(const Tensor& grad_output) override {
-        Tensor grad_input(input_shape);
-        grad_input.data = grad_output.data;
-        return grad_input;
+        return Tensor(grad_output.data, input_cache.shape);
+    }
+
+    void update_weights(Optimizer* optimizer) override {
+        // No trainable parameters
     }
 
     size_t num_params() const override {
-        return 0;  // Estas capas no tienen parámetros entrenables
+        return 0;
     }
-    void update_weights(Optimizer* optimizer) override {}
+
+private:
+    Tensor input_cache;
 };
