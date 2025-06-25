@@ -1,0 +1,1178 @@
+#pragma once
+#include "core/Layer.hpp"
+
+// Declaración adelantada para evitar inclusión circular
+class Softmax;
+
+class Activation : public Layer {
+protected:
+    Tensor input_cache;
+
+public:
+    virtual Tensor activate(const Tensor& x) = 0;
+    virtual Tensor derivative(const Tensor& x) = 0;
+
+    Tensor forward(const Tensor& input) override {
+        input_cache = input;
+        return activate(input);
+    }
+
+    Tensor backward(const Tensor& grad_output) override {
+        // Cambiamos la verificación de tipo a un método virtual
+        if (is_softmax()) {
+            return grad_output; // Caso especial para Softmax
+        }
+        Tensor deriv = derivative(input_cache);
+        Tensor grad_input(deriv.shape);
+        for (int i = 0; i < deriv.size(); ++i) {
+            grad_input[i] = grad_output[i] * deriv[i];
+        }
+        return grad_input;
+    }
+
+    virtual bool is_softmax() const { return false; }
+
+    void update_weights(Optimizer*) override {}
+    size_t num_params() const override { return 0; }
+    virtual ~Activation() = default;
+};
+
+// include/activations/ReLU.hpp
+#pragma once
+
+#include "Activation.hpp"
+
+class ReLU : public Activation {
+public:
+    Tensor activate(const Tensor& x) override {
+        Tensor out(x.shape);
+        for (int i = 0; i < x.size(); ++i) {
+            out[i] = std::max(0.0f, x[i]);
+        }
+        return out;
+    }
+
+    Tensor derivative(const Tensor& x) override {
+        Tensor grad(x.shape);
+        for (int i = 0; i < x.size(); ++i) {
+            grad[i] = x[i] > 0 ? 1.0f : 0.0f;
+        }
+        return grad;
+    }
+
+    size_t num_params() const override {
+        return 0;  // ReLU no tiene parámetros entrenables
+    }
+
+    // En ReLU.hpp
+    bool is_softmax() const override { return false; } // Mantener por defecto
+};
+
+// include/activations/Sigmoid.hpp
+#pragma once
+
+#include "Activation.hpp"
+#include <cmath>
+
+class Sigmoid : public Activation {
+public:
+    Tensor activate(const Tensor& x) override {
+        Tensor out(x.shape);
+        for (int i = 0; i < x.size(); ++i) {
+            out[i] = 1.0f / (1.0f + std::exp(-x[i]));
+        }
+        return out;
+    }
+
+    Tensor derivative(const Tensor& x) override {
+        Tensor sig = activate(x);  // reuse activate
+        Tensor grad(x.shape);
+        for (int i = 0; i < x.size(); ++i) {
+            grad[i] = sig[i] * (1.0f - sig[i]);
+        }
+        return grad;
+    }
+};
+#pragma once
+
+#include "Activation.hpp"
+#include <cmath>
+
+class Tanh : public Activation {
+public:
+    Tensor activate(const Tensor& x) override {
+        Tensor out(x.shape);
+        for (int i = 0; i < x.size(); ++i) {
+            out[i] = std::tanh(x[i]);
+        }
+        return out;
+    }
+
+    Tensor derivative(const Tensor& x) override {
+        Tensor grad(x.shape);
+        for (int i = 0; i < x.size(); ++i) {
+            float th = std::tanh(x[i]);
+            grad[i] = 1.0f - th * th; // derivada de tanh(x) es 1 - tanh(x)^2
+        }
+        return grad;
+    }
+
+    size_t num_params() const override {
+        return 0;  // Tanh no tiene parámetros entrenables
+    }
+
+    bool is_softmax() const override {
+        return false;
+    }
+};
+// include/core/Layer.hpp
+#pragma once
+
+#include "Tensor.hpp"
+
+class Optimizer;
+
+class Layer {
+public:
+    virtual Tensor forward(const Tensor& input) = 0;
+    virtual Tensor backward(const Tensor& grad_output) = 0;
+    virtual void update_weights(Optimizer* optimizer) = 0;
+    // Nuevo método para contar parámetros entrenables
+    virtual size_t num_params() const = 0;
+    virtual ~Layer() {}
+};
+
+#pragma once
+
+#include <vector>
+#include <memory>
+#include <iostream>
+#include <algorithm>
+#include <typeinfo>
+#include "Layer.hpp"
+#include "Loss.hpp"
+#include "optimizers/Optimizer.hpp"
+#include "metrics/Metric.hpp"
+#include "utils/Logger.hpp"  // Asegúrate de tener esta clase implementada
+
+class Model {
+private:
+    std::vector<std::shared_ptr<Layer>> layers;
+    std::shared_ptr<Loss> loss;
+    std::shared_ptr<Optimizer> optimizer;
+    std::vector<std::shared_ptr<Metric>> metrics;
+    std::shared_ptr<Logger> logger;  // Nuevo
+
+public:
+
+    size_t num_params() const {
+        return std::accumulate(layers.begin(), layers.end(), size_t(0),
+            [](size_t total, const std::shared_ptr<Layer>& layer) {
+                return total + layer->num_params();
+            });
+    }
+
+    void add(std::shared_ptr<Layer> layer) {
+        layers.push_back(layer);
+    }
+
+    void compile(std::shared_ptr<Loss> loss_fn, std::shared_ptr<Optimizer> opt,
+                 std::vector<std::shared_ptr<Metric>> metric_list = {},
+                 std::shared_ptr<Logger> log = nullptr) {
+        loss = loss_fn;
+        optimizer = opt;
+        metrics = metric_list;
+        logger = log;
+    }
+
+    void debug_pipeline_demo(const Tensor& input) {
+        Tensor current = input;
+
+        std::cout << "📥 Entrada:\n";
+        current.print_shape();
+        current.print_matrix();
+
+        for (size_t i = 0; i < layers.size(); ++i) {
+            std::cout << "\n➡️ Paso por capa " << i << ": " << typeid(*layers[i]).name() << "\n";
+            current = layers[i]->forward(current);
+            current.print_shape();
+            current.print_matrix();
+        }
+
+        std::cout << "\n✅ Resultado final\n";
+        current.print_shape();
+        current.print_matrix();
+    }
+
+
+
+
+     void fit(const Tensor& X, const Tensor& y, int epochs, int batch_size,
+             const Tensor* X_val = nullptr, const Tensor* y_val = nullptr) {
+
+        int num_samples = X.shape[0];
+
+        for (int epoch = 0; epoch < epochs; ++epoch) {
+            float total_loss = 0.0f;
+            std::vector<float> total_metrics(metrics.size(), 0.0f);
+            int batches = 0;
+
+            for (int i = 0; i < num_samples; i += batch_size) {
+                int end = std::min(i + batch_size, num_samples);
+
+                Tensor X_batch = X.slice(i, end);
+                Tensor y_batch = y.slice(i, end);
+
+                // --- Forward ---
+                Tensor out = X_batch;
+                for (auto& layer : layers)
+                    out = layer->forward(out);
+
+                float loss_value = loss->compute(out, y_batch);
+                total_loss += loss_value;
+
+                for (size_t m = 0; m < metrics.size(); ++m)
+                    total_metrics[m] += metrics[m]->compute(y_batch, out);
+
+                batches++;
+
+                // --- Backward ---
+                Tensor grad = loss->gradient(out, y_batch);
+                for (auto it = layers.rbegin(); it != layers.rend(); ++it)
+                    grad = (*it)->backward(grad);
+
+                // --- Update ---
+                for (auto& layer : layers)
+                    layer->update_weights(optimizer.get());
+            }
+
+            // Promedios de entrenamiento
+            float avg_loss = total_loss / batches;
+            std::vector<float> avg_metrics;
+            for (float val : total_metrics)
+                avg_metrics.push_back(val / batches);
+
+            // Validación
+            float val_loss = -1.0f;
+            std::vector<float> val_metrics(metrics.size(), -1.0f);
+
+            if (X_val && y_val) {
+                Tensor val_out = *X_val;
+                for (auto& layer : layers)
+                    val_out = layer->forward(val_out);
+
+                val_loss = loss->compute(val_out, *y_val);
+
+                for (size_t m = 0; m < metrics.size(); ++m)
+                    val_metrics[m] = metrics[m]->compute(*y_val, val_out);
+            }
+
+            // Logging
+            if (logger) {
+                logger->log_epoch(epoch + 1, avg_loss, avg_metrics.empty() ? -1.0f : avg_metrics[0],
+                  val_loss, val_metrics.empty() ? -1.0f : val_metrics[0]);
+
+
+            } else {
+                std::cout << "Epoch " << epoch + 1 << "/" << epochs
+                          << " - Loss: " << avg_loss;
+                for (size_t m = 0; m < metrics.size(); ++m)
+                    std::cout << " - " << typeid(*metrics[m]).name() << ": " << avg_metrics[m];
+                if (X_val && y_val) {
+                    std::cout << " - Val Loss: " << val_loss;
+                    for (size_t m = 0; m < metrics.size(); ++m)
+                        std::cout << " - Val " << typeid(*metrics[m]).name() << ": " << val_metrics[m];
+                }
+                std::cout << std::endl;
+            }
+        }
+    }
+
+    void fit2(const Tensor& X, const Tensor& y, int epochs, int batch_size,
+         const Tensor* X_val = nullptr, const Tensor* y_val = nullptr) {
+
+        int num_samples = X.shape[0];
+
+        for (int epoch = 0; epoch < epochs; ++epoch) {
+            std::cout << "\n🔁 Epoch " << (epoch + 1) << "/" << epochs << std::endl;
+            float total_loss = 0.0f;
+            std::vector<float> total_metrics(metrics.size(), 0.0f);
+            int batches = 0;
+
+            for (int i = 0; i < num_samples; i += batch_size) {
+                std::cout << "  📦 Procesando batch desde índice " << i << std::endl;
+
+                int end = std::min(i + batch_size, num_samples);
+                Tensor X_batch = X.slice(i, end);
+                Tensor y_batch = y.slice(i, end);
+
+                // --- Forward ---
+                std::cout << "    ➡️  Forward..." << std::endl;
+                Tensor out = X_batch;
+                for (size_t l = 0; l < layers.size(); ++l) {
+                    std::cout << "      🔹 Layer " << l << ": " << typeid(*layers[l]).name() << std::endl;
+                    out = layers[l]->forward(out);
+                }
+                std::cout << "    ✅ Forward terminado" << std::endl;
+
+                // --- Loss ---
+                std::cout << "    📉 Calculando pérdida..." << std::endl;
+                float loss_value = loss->compute(out, y_batch);
+                total_loss += loss_value;
+                std::cout << "    ✅ Pérdida: " << loss_value << std::endl;
+
+                // --- Métricas ---
+                for (size_t m = 0; m < metrics.size(); ++m) {
+                    float metric_val = metrics[m]->compute(y_batch, out);
+                    total_metrics[m] += metric_val;
+                    std::cout << "    📊 Métrica[" << m << "]: " << metric_val << std::endl;
+                }
+
+                batches++;
+
+                // --- Backward ---
+                std::cout << "    🔁 Backward..." << std::endl;
+                Tensor grad = loss->gradient(out, y_batch);
+                for (auto it = layers.rbegin(); it != layers.rend(); ++it) {
+                    grad = (*it)->backward(grad);
+                }
+                std::cout << "    ✅ Backward terminado" << std::endl;
+
+                // --- Update ---
+                std::cout << "    🛠️  Actualizando pesos..." << std::endl;
+                for (auto& layer : layers) {
+                    layer->update_weights(optimizer.get());
+                }
+                std::cout << "    ✅ Pesos actualizados" << std::endl;
+            }
+
+            float avg_loss = total_loss / batches;
+            std::vector<float> avg_metrics;
+            for (float val : total_metrics)
+                avg_metrics.push_back(val / batches);
+
+            // --- Validación ---
+            float val_loss = -1.0f;
+            std::vector<float> val_metrics(metrics.size(), -1.0f);
+
+            if (X_val && y_val) {
+                std::cout << "  🧪 Evaluando en datos de validación..." << std::endl;
+                Tensor val_out = *X_val;
+                for (auto& layer : layers)
+                    val_out = layer->forward(val_out);
+
+                val_loss = loss->compute(val_out, *y_val);
+                for (size_t m = 0; m < metrics.size(); ++m)
+                    val_metrics[m] = metrics[m]->compute(*y_val, val_out);
+
+                std::cout << "  ✅ Val loss: " << val_loss << std::endl;
+                for (size_t m = 0; m < metrics.size(); ++m)
+                    std::cout << "  📊 Val Métrica[" << m << "]: " << val_metrics[m] << std::endl;
+            }
+
+            // --- Logging final de la época ---
+            if (logger) {
+                logger->log_epoch(epoch + 1, avg_loss,
+                                avg_metrics.empty() ? -1.0f : avg_metrics[0],
+                                val_loss,
+                                val_metrics.empty() ? -1.0f : val_metrics[0]);
+            } else {
+                std::cout << "📈 Epoch " << epoch + 1 << "/" << epochs
+                        << " - Loss: " << avg_loss;
+                for (size_t m = 0; m < metrics.size(); ++m)
+                    std::cout << " - " << typeid(*metrics[m]).name() << ": " << avg_metrics[m];
+                if (X_val && y_val) {
+                    std::cout << " - Val Loss: " << val_loss;
+                    for (size_t m = 0; m < metrics.size(); ++m)
+                        std::cout << " - Val " << typeid(*metrics[m]).name() << ": " << val_metrics[m];
+                }
+                std::cout << std::endl;
+            }
+        }
+    }
+
+
+    Tensor predict(const Tensor& X) {
+        Tensor out = X;
+        for (auto& layer : layers)
+            out = layer->forward(out);
+        return out;
+    }
+
+    float evaluate(const Tensor& X, const Tensor& y) {
+        Tensor out = X;
+        for (auto& layer : layers)
+            out = layer->forward(out);
+
+        float acc_total = 0.0f;
+        for (auto& metric : metrics) {
+            float acc = metric->compute(y, out);
+            std::cout << typeid(*metric).name() << ": " << acc << std::endl;
+            acc_total += acc;
+        }
+        return acc_total / metrics.size();
+    }
+};
+#pragma once
+
+#include <vector>
+#include <stdexcept>
+#include <numeric>
+#include <iostream>
+#include <functional>
+#include <cmath>
+
+class Tensor {
+public:
+    std::vector<float> data;
+    std::vector<int> shape; // Ej: {batch, channels, height, width}
+
+    Tensor() = default;
+
+    Tensor(const std::vector<int>& shape_) : shape(shape_) {
+        int total = std::accumulate(shape.begin(), shape.end(), 1, std::multiplies<int>());
+        data.resize(total, 0.0f);
+    }
+
+    // Método empty() para verificar si el tensor está vacío
+    bool empty() const {
+        return data.empty();
+    }
+
+    float& operator[](size_t idx) {
+        if (idx >= data.size()) throw std::out_of_range("Index out of range");
+        return data[idx];
+    }
+
+    const float& operator[](size_t idx) const {
+        if (idx >= data.size()) throw std::out_of_range("Index out of range");
+        return data[idx];
+    }
+
+    float& at(const std::vector<int>& idx) {
+        return data[flatten_index(idx)];
+    }
+
+    const float& at(const std::vector<int>& idx) const {
+        return data[flatten_index(idx)];
+    }
+
+    int size() const {
+        return static_cast<int>(data.size());
+    }
+
+    void fill(float value) {
+        std::fill(data.begin(), data.end(), value);
+    }
+
+    void print(const std::string& label = "Tensor") const {
+        std::cout << label << " [";
+        for (size_t i = 0; i < shape.size(); ++i) {
+            std::cout << shape[i];
+            if (i < shape.size() - 1) std::cout << "x";
+        }
+        std::cout << "]\n";
+
+        for (size_t i = 0; i < data.size(); ++i) {
+            std::cout << data[i] << " ";
+            if ((i + 1) % shape.back() == 0) std::cout << "\n";
+        }
+        std::cout << std::endl;
+    }
+
+    Tensor slice(int start, int end) const {
+        if (shape.empty()) throw std::runtime_error("Cannot slice scalar tensor");
+        if (start < 0 || end > shape[0] || start >= end)
+            throw std::out_of_range("Invalid slice range");
+
+        int slice_size = 1;
+        for (size_t i = 1; i < shape.size(); ++i) {
+            slice_size *= shape[i];
+        }
+
+        Tensor sliced;
+        sliced.shape = shape;
+        sliced.shape[0] = end - start;
+        sliced.data.resize((end - start) * slice_size);
+
+        std::copy(
+            data.begin() + start * slice_size,
+            data.begin() + end * slice_size,
+            sliced.data.begin()
+        );
+
+        return sliced;
+    }
+
+    Tensor reshape(const std::vector<int>& new_shape) const {
+        int new_total = std::accumulate(new_shape.begin(), new_shape.end(), 1, std::multiplies<int>());
+        if (new_total != data.size()) {
+            throw std::invalid_argument("Reshape size mismatch");
+        }
+        Tensor reshaped;
+        reshaped.data = data;
+        reshaped.shape = new_shape;
+        return reshaped;
+    }
+
+    static Tensor concatenate(const std::vector<Tensor>& tensors, int axis) {
+        if (tensors.empty()) throw std::invalid_argument("No tensors to concatenate");
+
+        std::vector<int> base_shape = tensors[0].shape;
+        int concat_dim = 0;
+        for (const auto& t : tensors) {
+            if (t.shape.size() != base_shape.size())
+                throw std::invalid_argument("Tensors must have same number of dimensions");
+            for (size_t i = 0; i < t.shape.size(); ++i) {
+                if (i == axis) continue;
+                if (t.shape[i] != base_shape[i])
+                    throw std::invalid_argument("Tensors must have same shape except in concatenation axis");
+            }
+            concat_dim += t.shape[axis];
+        }
+
+        std::vector<int> new_shape = base_shape;
+        new_shape[axis] = concat_dim;
+        Tensor result(new_shape);
+
+        int offset = 0;
+        for (const auto& t : tensors) {
+            std::copy(t.data.begin(), t.data.end(), result.data.begin() + offset);
+            offset += t.data.size();
+        }
+        return result;
+    }
+
+    Tensor operator+(const Tensor& other) const {
+        check_same_shape(*this, other);
+        Tensor result(shape);
+        for (size_t i = 0; i < data.size(); ++i)
+            result.data[i] = data[i] + other.data[i];
+        return result;
+    }
+
+    Tensor operator-(const Tensor& other) const {
+        check_same_shape(*this, other);
+        Tensor result(shape);
+        for (size_t i = 0; i < data.size(); ++i)
+            result.data[i] = data[i] - other.data[i];
+        return result;
+    }
+
+    Tensor operator*(float scalar) const {
+        Tensor result(shape);
+        for (size_t i = 0; i < data.size(); ++i)
+            result.data[i] = data[i] * scalar;
+        return result;
+    }
+
+    Tensor operator*(const Tensor& other) const {
+        check_same_shape(*this, other);
+        Tensor result(shape);
+        for (size_t i = 0; i < data.size(); ++i)
+            result.data[i] = data[i] * other.data[i];
+        return result;
+    }
+
+    Tensor dot(const Tensor& other) const {
+        if (shape.size() != 2 || other.shape.size() != 2)
+            throw std::invalid_argument("dot() only supports 2D tensors");
+
+        int m = shape[0];         // filas de A
+        int n = shape[1];         // columnas de A
+        int p = other.shape[1];   // columnas de B
+
+        if (n != other.shape[0])
+            throw std::invalid_argument("dot(): shape mismatch");
+
+        Tensor result({m, p});
+        for (int i = 0; i < m; ++i) {
+            for (int j = 0; j < p; ++j) {
+                float sum = 0.0f;
+                for (int k = 0; k < n; ++k) {
+                    sum += this->at({i, k}) * other.at({k, j});
+                }
+                result.at({i, j}) = sum;
+            }
+        }
+        return result;
+    }
+ 
+    Tensor transpose() const {
+        if (shape.size() != 2)
+            throw std::invalid_argument("transpose() only supports 2D tensors");
+
+        int rows = shape[0];
+        int cols = shape[1];
+        Tensor transposed({cols, rows}); // invierte filas y columnas
+
+        for (int i = 0; i < rows; ++i) {
+            for (int j = 0; j < cols; ++j) {
+                transposed.at({j, i}) = this->at({i, j});
+            }
+        }
+        return transposed;
+    }
+
+void print_shape() const {
+    std::cout << "Shape: (";
+    for (size_t i = 0; i < shape.size(); ++i) {
+        std::cout << shape[i];
+        if (i != shape.size() - 1) std::cout << ", ";
+    }
+    std::cout << ")\n";
+}
+
+void print_matrix() const {
+    if (shape.size() == 4) {
+        int N = shape[0], C = shape[1], H = shape[2], W = shape[3];
+        for (int n = 0; n < N; ++n) {
+            for (int c = 0; c < C; ++c) {
+                std::cout << "🖼️ Sample " << n << ", canal " << c << ":\n";
+                for (int h = 0; h < H; ++h) {
+                    for (int w = 0; w < W; ++w) {
+                        std::cout << at({n, c, h, w}) << "\t";
+                    }
+                    std::cout << "\n";
+                }
+            }
+        }
+    } else if (shape.size() == 2) {
+        int N = shape[0], F = shape[1];
+        for (int n = 0; n < N; ++n) {
+            std::cout << "🧾 Sample " << n << " (Flatten): ";
+            for (int f = 0; f < F; ++f) {
+                std::cout << at({n, f}) << " ";
+            }
+            std::cout << "\n";
+        }
+    } else if (shape.size() == 1) {
+        std::cout << "📤 Vector plano: ";
+        for (int i = 0; i < shape[0]; ++i) {
+            std::cout << data[i] << " ";
+        }
+        std::cout << "\n";
+    } else {
+        std::cout << "⚠️  print_matrix no soporta tensores con " << shape.size() << " dimensiones.\n";
+    }
+}
+    
+
+
+private:
+    int flatten_index(const std::vector<int>& idx) const {
+        if (idx.size() != shape.size())
+            throw std::invalid_argument("Dimensionality mismatch in index");
+
+        int index = 0;
+        int stride = 1;
+        for (int d = shape.size() - 1; d >= 0; --d) {
+            if (idx[d] >= shape[d])
+                throw std::out_of_range("Index exceeds shape dimension");
+            index += idx[d] * stride;
+            stride *= shape[d];
+        }
+        return index;
+    }
+
+    void check_same_shape(const Tensor& a, const Tensor& b) const {
+        if (a.shape != b.shape) throw std::invalid_argument("Tensor shape mismatch");
+    }
+};
+
+
+#pragma once
+
+#include "core/Layer.hpp"
+#include "core/Tensor.hpp"
+#include "optimizers/Optimizer.hpp"
+#include <stdexcept>
+#include <algorithm>
+#include <string>
+
+class Conv2D : public Layer {
+private:
+    int in_channels, out_channels;
+    int kernel_h, kernel_w;
+    int stride;
+    std::string padding_type;
+
+    Tensor filters;
+    Tensor bias;
+    Tensor input_cache;
+    Tensor grad_filters;
+    Tensor grad_bias;
+
+public:
+    Conv2D(int in_ch, int out_ch, int k_h, int k_w, int stride_ = 1, const std::string& padding = "valid")
+        : in_channels(in_ch), out_channels(out_ch),
+          kernel_h(k_h), kernel_w(k_w),
+          stride(stride_), padding_type(padding) {
+
+        filters = Tensor({out_ch, in_ch, k_h, k_w});
+        filters.fill(1.0f);  // Inicialización simple para test
+        bias = Tensor({out_ch});
+        bias.fill(0.0f);
+        grad_filters = Tensor({out_ch, in_ch, k_h, k_w});
+        grad_bias = Tensor({out_ch});
+    }
+
+    size_t num_params() const override {
+        return filters.size() + bias.size();
+    }
+
+    Tensor forward(const Tensor& input) override {
+        input_cache = input;
+        int batch = input.shape[0];
+        int in_h = input.shape[2], in_w = input.shape[3];
+
+        int pad_h = 0, pad_w = 0;
+        if (padding_type == "same") {
+            pad_h = std::max((out_size(in_h, kernel_h, stride, "same") - 1) * stride + kernel_h - in_h, 0) / 2;
+            pad_w = std::max((out_size(in_w, kernel_w, stride, "same") - 1) * stride + kernel_w - in_w, 0) / 2;
+        }
+
+        int out_h = (in_h + 2 * pad_h - kernel_h) / stride + 1;
+        int out_w = (in_w + 2 * pad_w - kernel_w) / stride + 1;
+
+        Tensor output({batch, out_channels, out_h, out_w});
+        output.fill(0.0f);
+
+        for (int b = 0; b < batch; ++b) {
+            for (int oc = 0; oc < out_channels; ++oc) {
+                for (int oh = 0; oh < out_h; ++oh) {
+                    for (int ow = 0; ow < out_w; ++ow) {
+                        float sum = bias.at({oc});
+                        for (int ic = 0; ic < in_channels; ++ic) {
+                            for (int kh = 0; kh < kernel_h; ++kh) {
+                                for (int kw = 0; kw < kernel_w; ++kw) {
+                                    int ih = oh * stride + kh - pad_h;
+                                    int iw = ow * stride + kw - pad_w;
+                                    if (ih >= 0 && ih < in_h && iw >= 0 && iw < in_w) {
+                                        sum += input.at({b, ic, ih, iw}) *
+                                               filters.at({oc, ic, kh, kw});
+                                    }
+                                }
+                            }
+                        }
+                        output.at({b, oc, oh, ow}) = sum;
+                    }
+                }
+            }
+        }
+
+        return output;
+    }
+
+    Tensor backward(const Tensor& grad_output) override {
+        const Tensor& input = input_cache;
+        int batch = input.shape[0];
+        int in_h = input.shape[2], in_w = input.shape[3];
+        int out_h = grad_output.shape[2], out_w = grad_output.shape[3];
+
+        int pad_h = 0, pad_w = 0;
+        if (padding_type == "same") {
+            pad_h = std::max((out_size(in_h, kernel_h, stride, "same") - 1) * stride + kernel_h - in_h, 0) / 2;
+            pad_w = std::max((out_size(in_w, kernel_w, stride, "same") - 1) * stride + kernel_w - in_w, 0) / 2;
+        }
+
+        Tensor grad_input(input.shape);
+        grad_input.fill(0.0f);
+        grad_filters.fill(0.0f);
+        grad_bias.fill(0.0f);
+
+        for (int b = 0; b < batch; ++b) {
+            for (int oc = 0; oc < out_channels; ++oc) {
+                for (int oh = 0; oh < out_h; ++oh) {
+                    for (int ow = 0; ow < out_w; ++ow) {
+                        float grad_val = grad_output.at({b, oc, oh, ow});
+                        grad_bias.at({oc}) += grad_val;
+
+                        for (int ic = 0; ic < in_channels; ++ic) {
+                            for (int kh = 0; kh < kernel_h; ++kh) {
+                                for (int kw = 0; kw < kernel_w; ++kw) {
+                                    int ih = oh * stride + kh - pad_h;
+                                    int iw = ow * stride + kw - pad_w;
+                                    if (ih >= 0 && ih < in_h && iw >= 0 && iw < in_w) {
+                                        grad_input.at({b, ic, ih, iw}) += filters.at({oc, ic, kh, kw}) * grad_val;
+                                        grad_filters.at({oc, ic, kh, kw}) += input.at({b, ic, ih, iw}) * grad_val;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        return grad_input;
+    }
+
+    void update_weights(Optimizer* optimizer) override {
+        optimizer->update(filters, grad_filters);
+        optimizer->update(bias, grad_bias);
+    }
+
+    Tensor& get_filters() { return filters; }
+    Tensor& get_bias() { return bias; }
+    Tensor& get_grad_bias() { return grad_bias; }
+
+private:
+    int out_size(int in_size, int kernel, int stride, const std::string& pad) const {
+        if (pad == "same") return (in_size + stride - 1) / stride;
+        return (in_size - kernel) / stride + 1;
+    }
+};
+#pragma once
+
+#include "core/Layer.hpp"
+#include <stdexcept>
+#include <cmath>
+#include <algorithm>
+
+class AveragePooling2D : public Layer {
+private:
+    int pool_h, pool_w;
+    int stride;
+    std::string padding_type;
+    int pad_h = 0, pad_w = 0;
+    std::vector<int> input_shape;
+
+public:
+    AveragePooling2D(int pool_height, int pool_width, int stride_ = 1, const std::string& padding = "valid")
+        : pool_h(pool_height), pool_w(pool_width),
+          stride(stride_), padding_type(padding) {}
+
+    Tensor forward(const Tensor& input) override {
+        input_shape = input.shape;
+        if (input.shape.size() != 4)
+            throw std::invalid_argument("AveragePooling2D expects input shape [B, C, H, W]");
+
+        int B = input.shape[0], C = input.shape[1];
+        int H = input.shape[2], W = input.shape[3];
+
+        // Calcular padding
+        if (padding_type == "same") {
+            int out_h = static_cast<int>(std::ceil(float(H) / stride));
+            int out_w = static_cast<int>(std::ceil(float(W) / stride));
+            int pad_total_h = std::max(0, (out_h - 1) * stride + pool_h - H);
+            int pad_total_w = std::max(0, (out_w - 1) * stride + pool_w - W);
+            pad_h = pad_total_h / 2;
+            pad_w = pad_total_w / 2;
+        } else if (padding_type == "valid") {
+            pad_h = 0;
+            pad_w = 0;
+        } else {
+            throw std::invalid_argument("Unknown padding type: " + padding_type);
+        }
+
+        int H_pad = H + 2 * pad_h;
+        int W_pad = W + 2 * pad_w;
+
+        int out_h = (H_pad - pool_h) / stride + 1;
+        int out_w = (W_pad - pool_w) / stride + 1;
+
+        Tensor padded({B, C, H_pad, W_pad});
+        padded.fill(0.0f);
+
+        // Copiar input con padding
+        for (int b = 0; b < B; ++b)
+            for (int c = 0; c < C; ++c)
+                for (int h = 0; h < H; ++h)
+                    for (int w = 0; w < W; ++w)
+                        padded.at({b, c, h + pad_h, w + pad_w}) = input.at({b, c, h, w});
+
+        Tensor output({B, C, out_h, out_w});
+        float pool_size = static_cast<float>(pool_h * pool_w);
+
+        for (int b = 0; b < B; ++b)
+            for (int c = 0; c < C; ++c)
+                for (int i = 0; i < out_h; ++i)
+                    for (int j = 0; j < out_w; ++j) {
+                        float sum = 0.0f;
+                        for (int m = 0; m < pool_h; ++m)
+                            for (int n = 0; n < pool_w; ++n) {
+                                int y = i * stride + m;
+                                int x = j * stride + n;
+                                sum += padded.at({b, c, y, x});
+                            }
+                        output.at({b, c, i, j}) = sum / pool_size;
+                    }
+
+        return output;
+    }
+
+    Tensor backward(const Tensor& grad_output) override {
+        int B = input_shape[0], C = input_shape[1];
+        int H = input_shape[2], W = input_shape[3];
+        int H_pad = H + 2 * pad_h;
+        int W_pad = W + 2 * pad_w;
+        int out_h = grad_output.shape[2];
+        int out_w = grad_output.shape[3];
+
+        Tensor grad_padded({B, C, H_pad, W_pad});
+        grad_padded.fill(0.0f);
+        float pool_size = static_cast<float>(pool_h * pool_w);
+
+        for (int b = 0; b < B; ++b)
+            for (int c = 0; c < C; ++c)
+                for (int i = 0; i < out_h; ++i)
+                    for (int j = 0; j < out_w; ++j) {
+                        float grad = grad_output.at({b, c, i, j}) / pool_size;
+                        for (int m = 0; m < pool_h; ++m)
+                            for (int n = 0; n < pool_w; ++n) {
+                                int y = i * stride + m;
+                                int x = j * stride + n;
+                                grad_padded.at({b, c, y, x}) += grad;
+                            }
+                    }
+
+        // Quitar padding
+        Tensor grad_input({B, C, H, W});
+        for (int b = 0; b < B; ++b)
+            for (int c = 0; c < C; ++c)
+                for (int h = 0; h < H; ++h)
+                    for (int w = 0; w < W; ++w)
+                        grad_input.at({b, c, h, w}) = grad_padded.at({b, c, h + pad_h, w + pad_w});
+
+        return grad_input;
+    }
+
+    size_t num_params() const override { return 0; }
+
+    void update_weights(Optimizer*) override {}
+};
+#pragma once
+
+#include "core/Layer.hpp"
+#include <limits>
+#include <stdexcept>
+#include <cmath>
+
+class MaxPooling2D : public Layer {
+private:
+    int pool_h, pool_w;
+    int stride;
+    std::string padding_type;
+    int pad_h, pad_w;
+    std::vector<int> input_shape;
+    Tensor mask;
+
+public:
+    MaxPooling2D(int pool_height, int pool_width, int stride_ = 1, const std::string& padding = "valid")
+        : pool_h(pool_height), pool_w(pool_width),
+          stride(stride_), padding_type(padding),
+          pad_h(0), pad_w(0) {}
+
+    Tensor forward(const Tensor& input) override {
+        input_shape = input.shape; // [B, C, H, W]
+        if (input.shape.size() != 4)
+            throw std::invalid_argument("MaxPooling2D expects input shape [B, C, H, W]");
+
+        int B = input.shape[0], C = input.shape[1];
+        int H = input.shape[2], W = input.shape[3];
+
+        // Calcular padding
+        if (padding_type == "same") {
+            int out_h = static_cast<int>(std::ceil(float(H) / stride));
+            int out_w = static_cast<int>(std::ceil(float(W) / stride));
+            int pad_total_h = std::max(0, (out_h - 1) * stride + pool_h - H);
+            int pad_total_w = std::max(0, (out_w - 1) * stride + pool_w - W);
+            pad_h = pad_total_h / 2;
+            pad_w = pad_total_w / 2;
+        } else if (padding_type == "valid") {
+            pad_h = 0;
+            pad_w = 0;
+        } else {
+            throw std::invalid_argument("Unknown padding type: " + padding_type);
+        }
+
+        int H_pad = H + 2 * pad_h;
+        int W_pad = W + 2 * pad_w;
+
+        int out_h = (H_pad - pool_h) / stride + 1;
+        int out_w = (W_pad - pool_w) / stride + 1;
+
+        Tensor output({B, C, out_h, out_w});
+        Tensor padded({B, C, H_pad, W_pad});
+        padded.fill(0.0f);
+        mask = Tensor({B, C, H_pad, W_pad});
+        mask.fill(0.0f);
+
+        // Copiar input con padding
+        for (int b = 0; b < B; ++b)
+            for (int c = 0; c < C; ++c)
+                for (int h = 0; h < H; ++h)
+                    for (int w = 0; w < W; ++w)
+                        padded.at({b, c, h + pad_h, w + pad_w}) = input.at({b, c, h, w});
+
+        // Max pooling
+        for (int b = 0; b < B; ++b) {
+            for (int c = 0; c < C; ++c) {
+                for (int i = 0; i < out_h; ++i) {
+                    for (int j = 0; j < out_w; ++j) {
+                        float max_val = std::numeric_limits<float>::lowest();
+                        int max_y = -1, max_x = -1;
+
+                        for (int m = 0; m < pool_h; ++m) {
+                            for (int n = 0; n < pool_w; ++n) {
+                                int y = i * stride + m;
+                                int x = j * stride + n;
+                                float val = padded.at({b, c, y, x});
+                                if (val > max_val) {
+                                    max_val = val;
+                                    max_y = y;
+                                    max_x = x;
+                                }
+                            }
+                        }
+
+                        output.at({b, c, i, j}) = max_val;
+                        if (max_y >= 0 && max_x >= 0)
+                            mask.at({b, c, max_y, max_x}) = 1.0f;
+                    }
+                }
+            }
+        }
+
+        return output;
+    }
+
+    Tensor backward(const Tensor& grad_output) override {
+        int B = input_shape[0], C = input_shape[1];
+        int H = input_shape[2], W = input_shape[3];
+        int H_pad = H + 2 * pad_h;
+        int W_pad = W + 2 * pad_w;
+        int out_h = grad_output.shape[2];
+        int out_w = grad_output.shape[3];
+
+        Tensor grad_padded({B, C, H_pad, W_pad});
+        grad_padded.fill(0.0f);
+
+        for (int b = 0; b < B; ++b) {
+            for (int c = 0; c < C; ++c) {
+                for (int i = 0; i < out_h; ++i) {
+                    for (int j = 0; j < out_w; ++j) {
+                        float grad = grad_output.at({b, c, i, j});
+                        for (int m = 0; m < pool_h; ++m) {
+                            for (int n = 0; n < pool_w; ++n) {
+                                int y = i * stride + m;
+                                int x = j * stride + n;
+                                if (mask.at({b, c, y, x}) == 1.0f) {
+                                    grad_padded.at({b, c, y, x}) = grad;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Remover padding
+        Tensor grad_input({B, C, H, W});
+        for (int b = 0; b < B; ++b)
+            for (int c = 0; c < C; ++c)
+                for (int h = 0; h < H; ++h)
+                    for (int w = 0; w < W; ++w)
+                        grad_input.at({b, c, h, w}) = grad_padded.at({b, c, h + pad_h, w + pad_w});
+
+        return grad_input;
+    }
+
+    size_t num_params() const override { return 0; }
+
+    void update_weights(Optimizer* optimizer) override {}
+};
+// include/layers/Flatten.hpp
+#pragma once
+
+#include "core/Layer.hpp"
+#include <numeric>
+#include <stdexcept>
+
+class Flatten : public Layer {
+private:
+    std::vector<int> input_shape;
+
+public:
+    Tensor forward(const Tensor& input) override {
+        input_shape = input.shape;
+
+        if (input.shape.size() < 2)
+            throw std::invalid_argument("Flatten expects at least 2D input");
+
+        int batch = input.shape[0];
+        int feature_dim = 1;
+        for (size_t i = 1; i < input.shape.size(); ++i) {
+            feature_dim *= input.shape[i];
+        }
+
+        Tensor output({batch, feature_dim});
+        output.data = input.data;
+        return output;
+    }
+
+    Tensor backward(const Tensor& grad_output) override {
+        Tensor grad_input(input_shape);
+        grad_input.data = grad_output.data;
+        return grad_input;
+    }
+
+    size_t num_params() const override {
+        return 0;  // Estas capas no tienen parámetros entrenables
+    }
+    void update_weights(Optimizer* optimizer) override {}
+};
+#include "NeuralNet.hpp"
+#include <iostream>
+#include <memory>
+
+int main() {
+    std::cout << "🚀 Inicio del programa\n";
+
+    Tensor input({1, 1, 6, 6});
+    input.data = {
+        1, -5, -8, 4, 5, 6,
+        6, -5, 4, 3, 2, 1,
+        1, -3, 5, 3, 1, 0,
+        0, 2, 4, 2, 4, 2,
+        9, -8, 7, -6, 5, 4,
+        4, 5, 6, 7, 8, 9
+    };
+
+    std::cout << "\n======================== Modelo 1 ========================\n";
+    std::cout << "🔧 Configuración:\n";
+    std::cout << " - Conv2D: 1 canal -> 2 canales, kernel=3x3, stride=1, padding='valid'\n";
+    std::cout << " - Activación: ReLU\n";
+    std::cout << " - Pooling: MaxPooling2D, tamaño=2x2, stride=2, padding='valid'\n";
+    std::cout << " - Flatten\n";
+    std::cout << "📝 Descripción: MaxPooling con stride 2 sin padding\n";
+
+    Model model;
+    model.add(std::make_shared<Conv2D>(1, 2, 3, 3, 1, "valid"));
+    model.add(std::make_shared<ReLU>());
+    model.add(std::make_shared<MaxPooling2D>(2, 2, 2, "valid"));
+    model.add(std::make_shared<Flatten>());
+
+    std::cout << "\n🔬 Iniciando demostración paso a paso...\n";
+    model.debug_pipeline_demo(input);
+
+    std::cout << "\n======================== Modelo 2 ========================\n";
+    std::cout << "🔧 Configuración:\n";
+    std::cout << " - Conv2D: 1 canal -> 2 canales, kernel=3x3, stride=1, padding='valid'\n";
+    std::cout << " - Activación: ReLU\n";
+    std::cout << " - Pooling: AveragePooling2D, tamaño=2x2, stride=2, padding='valid'\n";
+    std::cout << " - Flatten\n";
+    std::cout << "📝 Descripción: AveragePooling con stride 2 sin padding\n";
+
+    Model model2;
+    model2.add(std::make_shared<Conv2D>(1, 2, 3, 3, 1, "valid"));
+    model2.add(std::make_shared<ReLU>());
+    model2.add(std::make_shared<AveragePooling2D>(2, 2, 2, "valid"));
+    model2.add(std::make_shared<Flatten>());
+
+    std::cout << "\n🔬 Iniciando demostración paso a paso...\n";
+    model2.debug_pipeline_demo(input);
+
+    return 0;
+}
