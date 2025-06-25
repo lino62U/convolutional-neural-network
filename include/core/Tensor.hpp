@@ -199,6 +199,51 @@ public:
         return transposed;
     }
 
+void print_shape() const {
+    std::cout << "Shape: (";
+    for (size_t i = 0; i < shape.size(); ++i) {
+        std::cout << shape[i];
+        if (i != shape.size() - 1) std::cout << ", ";
+    }
+    std::cout << ")\n";
+}
+
+void print_matrix() const {
+    if (shape.size() == 4) {
+        int N = shape[0], C = shape[1], H = shape[2], W = shape[3];
+        for (int n = 0; n < N; ++n) {
+            for (int c = 0; c < C; ++c) {
+                std::cout << "🖼️ Sample " << n << ", canal " << c << ":\n";
+                for (int h = 0; h < H; ++h) {
+                    for (int w = 0; w < W; ++w) {
+                        std::cout << at({n, c, h, w}) << "\t";
+                    }
+                    std::cout << "\n";
+                }
+            }
+        }
+    } else if (shape.size() == 2) {
+        int N = shape[0], F = shape[1];
+        for (int n = 0; n < N; ++n) {
+            std::cout << "🧾 Sample " << n << " (Flatten): ";
+            for (int f = 0; f < F; ++f) {
+                std::cout << at({n, f}) << " ";
+            }
+            std::cout << "\n";
+        }
+    } else if (shape.size() == 1) {
+        std::cout << "📤 Vector plano: ";
+        for (int i = 0; i < shape[0]; ++i) {
+            std::cout << data[i] << " ";
+        }
+        std::cout << "\n";
+    } else {
+        std::cout << "⚠️  print_matrix no soporta tensores con " << shape.size() << " dimensiones.\n";
+    }
+}
+    
+
+
 private:
     int flatten_index(const std::vector<int>& idx) const {
         if (idx.size() != shape.size())

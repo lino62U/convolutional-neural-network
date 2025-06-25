@@ -41,6 +41,28 @@ public:
         logger = log;
     }
 
+    void debug_pipeline_demo(const Tensor& input) {
+        Tensor current = input;
+
+        std::cout << "📥 Entrada:\n";
+        current.print_shape();
+        current.print_matrix();
+
+        for (size_t i = 0; i < layers.size(); ++i) {
+            std::cout << "\n➡️ Paso por capa " << i << ": " << typeid(*layers[i]).name() << "\n";
+            current = layers[i]->forward(current);
+            current.print_shape();
+            current.print_matrix();
+        }
+
+        std::cout << "\n✅ Resultado final\n";
+        current.print_shape();
+        current.print_matrix();
+    }
+
+
+
+
      void fit(const Tensor& X, const Tensor& y, int epochs, int batch_size,
              const Tensor* X_val = nullptr, const Tensor* y_val = nullptr) {
 

@@ -19,14 +19,16 @@ private:
     Tensor grad_bias;
 
 public:
-    Conv2D(int in_ch, int out_ch, int k_h, int k_w, int s_h = 1, int s_w = 1, const std::string& padding = "valid")
+     Conv2D(int in_ch, int out_ch, int k_h, int k_w, int s_h = 1, int s_w = 1, const std::string& padding = "valid")
         : in_channels(in_ch), out_channels(out_ch),
           kernel_h(k_h), kernel_w(k_w),
           stride_h(s_h), stride_w(s_w),
           padding_type(padding) {
 
         filters = Tensor({out_ch, in_ch, k_h, k_w});
+        filters.fill(1.0f);  // Inicialización simple para test
         bias = Tensor({out_ch});
+        bias.fill(0.0f);
         grad_filters = Tensor({out_ch, in_ch, k_h, k_w});
         grad_bias = Tensor({out_ch});
     }

@@ -8,21 +8,29 @@
 class Softmax : public Activation {
 public:
     Tensor activate(const Tensor& x) override {
+        if (x.shape.size() != 2)
+            throw std::invalid_argument("Softmax espera tensor 2D [batch, clases]");
+
         Tensor out(x.shape);
-        const float max_val = *std::max_element(x.data.begin(), x.data.end());
-        
-        // Calcula sum_exp y aplica exp en un solo paso (C++17)
-        const float sum_exp = std::transform_reduce(
-            x.data.begin(), x.data.end(), 0.0f, std::plus{}, 
-            [max_val](float val) { return std::exp(val - max_val); }
-        );
-        
-        // Normaliza
-        std::transform(x.data.begin(), x.data.end(), out.data.begin(),
-            [sum_exp, max_val](float val) { return std::exp(val - max_val) / sum_exp; });
-        
+        int batch = x.shape[0];
+        int num_classes = x.shape[1];
+
+        for (int b = 0; b < batch; ++b) {
+            float max_val = -1e9;
+            for (int j = 0; j < num_classes; ++j)
+                max_val = std::max(max_val, x.at({b, j}));
+
+            float sum_exp = 0.0f;
+            for (int j = 0; j < num_classes; ++j)
+                sum_exp += std::exp(x.at({b, j}) - max_val);
+
+            for (int j = 0; j < num_classes; ++j)
+                out.at({b, j}) = std::exp(x.at({b, j}) - max_val) / (sum_exp + 1e-9f);
+        }
+
         return out;
     }
+
 
     Tensor derivative(const Tensor& x) override {
         // Este método no debería usarse cuando se combina con CrossEntropyLoss

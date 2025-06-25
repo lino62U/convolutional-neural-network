@@ -18,6 +18,8 @@
 #include "layers/Conv2D.hpp"
 #include "layers/Flatten.hpp"
 #include "layers/MaxPooling2D.hpp"
+#include "layers/MinPooling2D.hpp"
+#include "layers/AveragePooling2D.hpp"
 // Puedes agregar más: Flatten, LSTM, RNN, etc.
 
 // Optimizers

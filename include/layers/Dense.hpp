@@ -46,43 +46,33 @@ public:
     }
 
     Tensor backward(const Tensor& grad_output) override {
-        int batch = grad_output.shape[0];
-        int in_f = weights.shape[0];
-        int out_f = weights.shape[1];
+    int batch = grad_output.shape[0];
+    int in_f = weights.shape[0];
+    int out_f = weights.shape[1];
 
-        Tensor grad_input({batch, in_f});
-        grad_weights.fill(0.0f);
-        grad_bias.fill(0.0f);
+    grad_weights.fill(0.0f);
+    grad_bias.fill(0.0f);
 
-        // grad_input = grad_output · W^T
-        for (int b = 0; b < batch; ++b) {
-            for (int i = 0; i < in_f; ++i) {
-                float sum = 0.0f;
-                for (int j = 0; j < out_f; ++j) {
-                    sum += grad_output.at({b, j}) * weights.at({i, j});
-                }
-                grad_input.at({b, i}) = sum;
-            }
-        }
+    // grad_weights = input.T · grad_output
+    Tensor input_T = input_cache.transpose();                    // [in_f, batch]
+    grad_weights = input_T.dot(grad_output);                     // [in_f, out_f]
 
-        // grad_weights = input^T · grad_output
-        for (int i = 0; i < in_f; ++i) {
-            for (int j = 0; j < out_f; ++j) {
-                for (int b = 0; b < batch; ++b) {
-                    grad_weights.at({i, j}) += input_cache.at({b, i}) * grad_output.at({b, j});
-                }
-            }
-        }
-
-        // grad_bias = suma sobre la dimensión batch
-        for (int j = 0; j < out_f; ++j) {
-            for (int b = 0; b < batch; ++b) {
-                grad_bias[j] += grad_output.at({b, j});
-            }
-        }
-
-        return grad_input;
+    // grad_bias = suma sobre el batch
+    for (int j = 0; j < out_f; ++j) {
+        float sum = 0.0f;
+        for (int b = 0; b < batch; ++b)
+            sum += grad_output.at({b, j});
+        grad_bias[j] = sum;
     }
+
+    // grad_input = grad_output · W^T
+    Tensor W_T = weights.transpose();                            // [out_f, in_f]
+    Tensor grad_input = grad_output.dot(W_T);                    // [batch, in_f]
+
+    return grad_input;
+}
+
+
 
     void update_weights(Optimizer* optimizer) override {
         optimizer->update(weights, grad_weights);
