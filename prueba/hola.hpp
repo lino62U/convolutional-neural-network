@@ -19,7 +19,7 @@ class Layer;
 class Activation;
 
 // Enum for activation types
-enum class ActivationType { ReLU, Sigmoid, Softmax };
+enum class ActivationType { ReLU, Sigmoid, Softmax , None};
 
 // Tensor class
 class Tensor {
@@ -362,6 +362,23 @@ Tensor reshape(const std::vector<int>& new_shape) const {
 }
 
 
+Tensor operator-(const Tensor& other) const {
+    if (shape != other.shape) {
+        throw std::runtime_error("Shape mismatch for subtraction");
+    }
+    std::vector<float> result_data(data.size());
+    for (size_t i = 0; i < data.size(); ++i) {
+        result_data[i] = data[i] - other.data[i];
+    }
+    return Tensor(result_data, shape);
+}
+Tensor operator-(float scalar) const {
+    std::vector<float> result_data(data.size());
+    for (size_t i = 0; i < data.size(); ++i) {
+        result_data[i] = data[i] - scalar;
+    }
+    return Tensor(result_data, shape);
+}
 
 
 
@@ -1833,13 +1850,31 @@ public:
 
         return x + ff_cache;
     }
-
+/*
     Tensor backward(const Tensor& grad_output) override {
         Tensor grad_ff = ln2->backward(grad_output);
         grad_ff = ff->backward(grad_ff);
         Tensor grad_x = grad_output + grad_ff;
         grad_x = ln1->backward(mhsa->backward(grad_x));
         return grad_x + grad_output;
+    }*/
+    Tensor backward(const Tensor& grad_output) override {
+        // Paso 1: Gradiente con respecto a la suma final (x + FF)
+        Tensor grad_ff_out = grad_output;
+
+        // Paso 2: Retropropagación a través del bloque FFN
+        Tensor grad_ff_in = ff->backward(grad_ff_out);           // dL/d(ff_input)
+        Tensor grad_ln2 = ln2->backward(grad_ff_in);             // dL/d(post_mhsa)
+
+        // Paso 3: Sumar con el skip connection de la salida de MHSA
+        Tensor grad_post_mhsa = grad_ln2 + grad_output;
+
+        // Paso 4: Retropropagación a través del MHSA
+        Tensor grad_mhsa = mhsa->backward(grad_post_mhsa);       // dL/d(LN1_out)
+        Tensor grad_ln1 = ln1->backward(grad_mhsa);              // dL/d(input)
+
+        // Nota: no es necesario sumar otra vez grad_output aquí, ya se usó
+        return grad_ln1;
     }
 
     void update_weights(Optimizer* optimizer) override {
@@ -1857,39 +1892,64 @@ public:
 
 class FilterTokenizer : public Layer {
 private:
-    int in_channels;   // C
-    int token_channels; // D
-    int num_tokens;     // L
-    std::shared_ptr<Dense> linear1; // C -> L
-    std::shared_ptr<Dense> linear2; // C -> D
-    Tensor softmax_cache;
-    Tensor token_cache;
+    std::shared_ptr<Dense> linear1;  // (C -> L)
+    std::shared_ptr<Dense> linear2;  // (C -> D)
+
+    Tensor attn_weights;     // softmax result: (N, L, HW)
+    Tensor input_cache;      // original input: (N, HW, C)
+    Tensor a_cache;          // output of linear1 before softmax: (N, HW, L)
+    Tensor softmax_cache;    // after softmax: (N, HW, L)
+    Tensor token_cache;      // final output: (N, L, D)
 
 public:
-    FilterTokenizer(int in_channels, int token_channels, int num_tokens)
-        : in_channels(in_channels), token_channels(token_channels), num_tokens(num_tokens) {
-
+    FilterTokenizer(int in_channels, int token_channels, int num_tokens) {
+        // Linear1: C → L  (token scores)
         linear1 = std::make_shared<Dense>(in_channels, num_tokens, ActivationType::None);
+        // Linear2: C → D  (project token embeddings)
         linear2 = std::make_shared<Dense>(in_channels, token_channels, ActivationType::None);
     }
 
     Tensor forward(const Tensor& input, bool training = false) override {
-        // Input: (B, HW, C)
-        Tensor A = linear1->forward(input, training); // (B, HW, L)
-        softmax_cache = A.softmax();                 // softmax over HW
-        Tensor A_T = softmax_cache.transpose(1, 2);  // (B, L, HW)
-        Tensor tokens = A_T.matmul(input);           // (B, L, C)
-        token_cache = tokens;
-        return linear2->forward(tokens, training);   // (B, L, D)
+        // input shape: (N, HW, C)
+        input_cache = input;
+
+        Tensor a = linear1->forward(input, training);  // (N, HW, L)
+        a_cache = a;
+
+        softmax_cache = a.softmax();  // softmax along HW dimension (dim=1)
+
+        Tensor attn = softmax_cache.transpose(1, 2);  // (N, L, HW)
+
+        attn_weights = attn;
+
+        Tensor weighted_sum = attn.matmul(input);  // (N, L, C)
+
+        token_cache = linear2->forward(weighted_sum, training);  // (N, L, D)
+
+        return token_cache;
     }
 
     Tensor backward(const Tensor& grad_output) override {
-        // grad_output: (B, L, D)
-        Tensor grad_tokens = linear2->backward(grad_output); // (B, L, C)
-        Tensor grad_attn = grad_tokens.matmul_transpose(input, false, true); // (B, L, HW)
-        Tensor grad_attn_T = grad_attn.transpose(1, 2);                      // (B, HW, L)
-        Tensor grad_linear1 = linear1->backward(grad_attn_T);               // (B, HW, C)
-        return grad_linear1; // Pass back to previous layer
+        // grad_output: (N, L, D)
+        Tensor grad_linear2 = linear2->backward(grad_output);  // (N, L, C)
+
+        // Now compute grad w.r.t attention weights
+        // attn: (N, L, HW), input: (N, HW, C)
+        Tensor grad_attn = grad_linear2.matmul(input_cache.transpose(1, 2));  // (N, L, HW)
+
+        Tensor grad_softmax = grad_attn.transpose(1, 2);  // (N, HW, L)
+
+        // backprop through softmax
+        // Use standard formula: dL/da = softmax * (dL/dy - sum_j(dL/dy_j * softmax_j))
+        Tensor sum = (grad_softmax * softmax_cache).sum(2).reshape({softmax_cache.shape[0], softmax_cache.shape[1], 1});
+        Tensor d_softmax = softmax_cache * (grad_softmax - sum);  // (N, HW, L)
+
+        Tensor grad_linear1 = linear1->backward(d_softmax);  // (N, HW, C)
+
+        Tensor grad_input = attn_weights.transpose(1, 2).matmul(grad_linear2);  // (N, HW, C)
+
+        // total gradient wrt input
+        return grad_linear1 + grad_input;
     }
 
     void update_weights(Optimizer* optimizer) override {
@@ -1902,6 +1962,217 @@ public:
     }
 };
 
+class BatchNorm1D : public Layer {
+private:
+    Tensor running_mean;
+    Tensor running_var;
+    Tensor gamma;
+    Tensor beta;
+    Tensor input_cache;
+    Tensor norm_cache;
+
+    float momentum;
+    float eps;
+    bool is_initialized;
+
+    Tensor dgamma;
+    Tensor dbeta;
+
+public:
+    BatchNorm1D(int num_features, float momentum_ = 0.1f, float eps_ = 1e-5f)
+        : momentum(momentum_), eps(eps_), is_initialized(false) {
+        gamma = Tensor(std::vector<float>(num_features, 1.0f), {num_features});
+        beta  = Tensor(std::vector<float>(num_features, 0.0f), {num_features});
+        running_mean = Tensor(std::vector<float>(num_features, 0.0f), {num_features});
+        running_var  = Tensor(std::vector<float>(num_features, 1.0f), {num_features});
+    }
+
+    Tensor forward(const Tensor& input, bool training = false) override {
+        input_cache = input;
+        int batch_size = input.shape[0];
+        int features = input.shape[1];
+
+        std::vector<float> mean(features, 0.0f);
+        std::vector<float> var(features, 0.0f);
+
+        // Calcular media y varianza por canal
+        for (int f = 0; f < features; ++f) {
+            float sum = 0.0f;
+            for (int b = 0; b < batch_size; ++b) {
+                sum += input.data[b * features + f];
+            }
+            mean[f] = sum / batch_size;
+
+            float sq_sum = 0.0f;
+            for (int b = 0; b < batch_size; ++b) {
+                float diff = input.data[b * features + f] - mean[f];
+                sq_sum += diff * diff;
+            }
+            var[f] = sq_sum / batch_size;
+        }
+
+        // Actualizar medias en entrenamiento
+        if (training) {
+            for (int i = 0; i < features; ++i) {
+                running_mean.data[i] = momentum * mean[i] + (1.0f - momentum) * running_mean.data[i];
+                running_var.data[i]  = momentum * var[i]  + (1.0f - momentum) * running_var.data[i];
+            }
+        } else {
+            mean = running_mean.data;
+            var = running_var.data;
+        }
+
+        // Normalizar
+        std::vector<float> normed_data(batch_size * features);
+        for (int b = 0; b < batch_size; ++b) {
+            for (int f = 0; f < features; ++f) {
+                float x = input.data[b * features + f];
+                float normalized = (x - mean[f]) / std::sqrt(var[f] + eps);
+                normed_data[b * features + f] = gamma.data[f] * normalized + beta.data[f];
+            }
+        }
+
+        norm_cache = Tensor(normed_data, input.shape);
+        return norm_cache;
+    }
+
+    Tensor backward(const Tensor& grad_output) override {
+        // Simplificada: no implementa derivada exacta de batchnorm
+        // Para entrenamiento real, se debería usar autodiff o implementación completa
+        return grad_output;
+    }
+
+    void update_weights(Optimizer* optimizer) override {
+        optimizer->update(gamma, dgamma);
+        optimizer->update(beta, dbeta);
+    }
+
+    size_t num_params() const override {
+        return gamma.total_elements() + beta.total_elements();
+    }
+};
+
+
+class Projector : public Layer {
+private:
+    Dense proj_feature;  // linear1
+    Dense proj_token_key;  // linear2
+    Dense proj_token_value;  // linear3
+    std::shared_ptr<Dense> downsample = nullptr;
+
+    std::shared_ptr<BatchNorm1D> norm;
+    std::shared_ptr<ReLU> relu = std::make_shared<ReLU>();
+
+    Tensor cache_attn;
+    int in_channels, out_channels, token_channels;
+
+public:
+    Projector(int in_channels_, int out_channels_, int token_channels_)
+        : in_channels(in_channels_), out_channels(out_channels_), token_channels(token_channels_),
+          proj_feature(in_channels_, token_channels_, ActivationType::None),
+          proj_token_key(token_channels_, token_channels_, ActivationType::None),
+          proj_token_value(token_channels_, out_channels_, ActivationType::None),
+          norm(std::make_shared<BatchNorm1D>(out_channels_)) {
+
+        if (in_channels != out_channels) {
+            downsample = std::make_shared<Dense>(in_channels, out_channels, ActivationType::None);
+        }
+    }
+
+    Tensor forward(const Tensor& x, const Tensor& tokens, bool training = false) {
+        // x: (N, HW, C_in), tokens: (N, L, D)
+
+        Tensor x_q = proj_feature.forward(x, training);        // (N, HW, token_channels)
+        Tensor t_k = proj_token_key.forward(tokens, training); // (N, L, token_channels)
+        Tensor t_v = proj_token_value.forward(tokens, training); // (N, L, out_channels)
+
+        Tensor t_k_T = t_k.transpose(1, 2); // (N, token_channels, L)
+        Tensor attn = x_q.matmul(t_k_T);   // (N, HW, L)
+        attn = attn.softmax();             // softmax on last dim (L)
+        cache_attn = attn;
+
+        Tensor message = attn.matmul(t_v); // (N, HW, out_channels)
+
+        Tensor x_proj = x;
+        if (downsample) {
+            x_proj = downsample->forward(x, training); // (N, HW, out_channels)
+        }
+
+        Tensor out = x_proj + message; // fusion
+        out = out.transpose(1, 2);     // (N, C, HW) → para BN1D
+
+        out = norm->forward(out, training);
+        out = relu->apply_batch(out);
+
+        out = out.transpose(1, 2);     // Volver a (N, HW, C)
+
+        return out;
+    }
+
+    Tensor backward(const Tensor& grad_output) override {
+        // grad_output: (N, HW, C_out) después de ReLU + BN
+        Tensor grad = grad_output.transpose(1, 2); // (N, C_out, HW)
+
+        // Paso 1: backward por ReLU y BatchNorm
+        grad = relu->derivative_batch(norm->forward(grad_output.transpose(1, 2))) * grad;
+        grad = norm->backward(grad);
+        grad = grad.transpose(1, 2); // Volver a (N, HW, C_out)
+
+        // Paso 2: split grad respecto a suma x_proj + message
+        Tensor grad_message = grad;
+        Tensor grad_x_proj = grad;
+
+        // Paso 3: backward de downsample si existe
+        Tensor grad_x;
+        if (downsample) {
+            grad_x = downsample->backward(grad_x_proj);
+        } else {
+            grad_x = grad_x_proj;
+        }
+
+        // Paso 4: backward sobre atención
+        // attn: (N, HW, L), t_v: (N, L, C_out)
+        Tensor grad_attn = grad_message.matmul(proj_token_value.forward(tokens).transpose(1, 2)); // (N, HW, L)
+        Tensor grad_t_v = cache_attn.transpose(1, 2).matmul(grad_message); // (N, L, C_out)
+
+        // Paso 5: backprop softmax
+        Tensor softmax_input = proj_feature.forward(x).matmul(proj_token_key.forward(tokens).transpose(1, 2)); // x_q * t_k^T
+        Tensor attn_softmax = cache_attn;
+        Tensor sum = (grad_attn * attn_softmax).sum(2).reshape({attn_softmax.shape[0], attn_softmax.shape[1], 1});
+        Tensor d_softmax = attn_softmax * (grad_attn - sum); // (N, HW, L)
+
+        // Paso 6: backward matmul de atención: x_q * t_k^T
+        Tensor x_q = proj_feature.forward(x);          // (N, HW, token_channels)
+        Tensor t_k = proj_token_key.forward(tokens);   // (N, L, token_channels)
+
+        Tensor grad_x_q = d_softmax.matmul(t_k);       // (N, HW, token_channels)
+        Tensor grad_t_k = d_softmax.transpose(1, 2).matmul(x_q); // (N, L, token_channels)
+
+        // Paso 7: backward proyecciones lineales
+        Tensor grad_tokens_1 = proj_token_key.backward(grad_t_k);     // contribución de t_k
+        Tensor grad_tokens_2 = proj_token_value.backward(grad_t_v);   // contribución de t_v
+        Tensor grad_tokens_total = grad_tokens_1 + grad_tokens_2;
+
+        Tensor grad_x_feature = proj_feature.backward(grad_x_q);      // grad respecto a x
+
+        return grad_x + grad_x_feature;  // total grad_input
+    }
+
+
+    void update_weights(Optimizer* opt) override {
+        proj_feature.update_weights(opt);
+        proj_token_key.update_weights(opt);
+        proj_token_value.update_weights(opt);
+        if (downsample) downsample->update_weights(opt);
+        norm->update_weights(opt);
+    }
+
+    size_t num_params() const override {
+        return proj_feature.num_params() + proj_token_key.num_params() +
+               proj_token_value.num_params() + (downsample ? downsample->num_params() : 0) +
+               norm->num_params();
+    }
+};
 
 // Flatten layer
 class Flatten : public Layer {
@@ -1964,18 +2235,29 @@ public:
             case ActivationType::ReLU: activation = std::make_shared<ReLU>(); break;
             case ActivationType::Sigmoid: activation = std::make_shared<Sigmoid>(); break;
             case ActivationType::Softmax: activation = std::make_shared<Softmax>(); break;
+            case ActivationType::None: activation = nullptr; break; // ✅ soporta sin activación
             default: throw std::runtime_error("Unsupported activation for Dense");
         }
         initialize_weights(in_size, out_size);
     }
-
-    Tensor forward(const Tensor& input, bool training = false) override {
+    /*
+        Tensor forward(const Tensor& input, bool training = false) override {
         if (input.shape[1] != weights.shape[0]) {
             throw std::runtime_error("Input shape mismatch");
         }
         input_cache = input;
         z_cache = input.matmul(weights) + bias;
         return activation->apply_batch(z_cache);
+    }
+    */
+    
+    Tensor forward(const Tensor& input, bool training = false) override {
+        if (input.shape[1] != weights.shape[0]) {
+            throw std::runtime_error("Input shape mismatch");
+        }
+        input_cache = input;
+        z_cache = input.matmul(weights) + bias;
+        return (activation ? activation->apply_batch(z_cache) : z_cache); // ✅ sin activación si nullptr
     }
     /*
     Tensor backward(const Tensor& grad_output) override {
@@ -2000,7 +2282,7 @@ public:
         bias_grad = Tensor(bias_grad_data, bias.shape);
 
         return grad_z.matmul(weights.transpose());
-    }/-*/
+    }/-
     Tensor backward(const Tensor& grad_output) override {
         Tensor grad_z;
 
@@ -2032,7 +2314,42 @@ public:
         bias_grad = Tensor(bias_grad_data, bias.shape);
 
         return grad_z.matmul(weights.transpose());
+    }*/
+
+    Tensor backward(const Tensor& grad_output) override {
+        Tensor grad_z;
+
+        if (!activation) {
+            grad_z = grad_output;  // ✅ sin activación, pasa grad_output directo
+        } else if (dynamic_cast<Softmax*>(activation.get()) != nullptr) {
+            grad_z = grad_output; // ⚠️ asumiendo CrossEntropy
+        } else {
+            Tensor activated = activation->apply_batch(z_cache);
+            grad_z = activation->derivative_batch(z_cache, activated);
+            for (size_t i = 0; i < grad_z.data.size(); ++i) {
+                grad_z.data[i] *= grad_output.data[i];
+            }
+        }
+
+        weights_grad = input_cache.transpose().matmul(grad_z);
+
+        if (weight_decay > 0.0f) {
+            for (size_t i = 0; i < weights_grad.data.size(); ++i) {
+                weights_grad.data[i] += 2.0f * weight_decay * weights.data[i];
+            }
+        }
+
+        std::vector<float> bias_grad_data(bias.shape[0], 0.0f);
+        for (int i = 0; i < grad_z.shape[0]; ++i) {
+            for (int j = 0; j < bias.shape[0]; ++j) {
+                bias_grad_data[j] += grad_z.data[i * bias.shape[0] + j];
+            }
+        }
+        bias_grad = Tensor(bias_grad_data, bias.shape);
+
+        return grad_z.matmul(weights.transpose());
     }
+
 
     void update_weights(Optimizer* optimizer) override {
         optimizer->update(weights, weights_grad);

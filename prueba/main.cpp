@@ -31,6 +31,20 @@ int main() {
 }
 /*
 
+auto model = builder
+    .add_conv_block(1, 64, 3, 1, 1)            // Extraer features bajos (tipo CNN)
+    .add_conv_block(64, 128, 3, 1, 1)
+    .add_batchnorm1d(128)
+    .add_activation(ActivationType::ReLU)
+    .add_tokenizer(128, 16)                    // 16 tokens semánticos (tokenizer del paper)
+    .add_transformer_token_block(128, 1, 128)  // VT encoder (self-attn + FFN)
+    .add_projector(128, 128)                   // Reproyección al feature map (opcional si no haces segmentación)
+    .add_global_average_pooling()
+    .add_dense(128, 10, ActivationType::Softmax)
+    .build();
+
+
+    
 int main() {
     MNISTLoader train_data("train-images.idx3-ubyte", "train-labels.idx1-ubyte", 1000);
     MNISTLoader test_data("t10k-images.idx3-ubyte", "t10k-labels.idx1-ubyte", 200);
