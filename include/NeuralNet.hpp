@@ -12,6 +12,7 @@
 #include "activations/ReLU.hpp"
 #include "activations/Sigmoid.hpp"
 #include "activations/Softmax.hpp"
+#include "activations/ReLUActivationLayer.hpp"
 
 // Layers
 #include "layers/Dense.hpp"

@@ -19,6 +19,12 @@ public:
             throw std::runtime_error("Data size doesn't match shape");
         }
     }
+    // Constructor que recibe solo shape y rellena data con ceros
+    Tensor(const std::vector<int>& s) : shape(s) {
+        int total = std::accumulate(s.begin(), s.end(), 1, std::multiplies<int>());
+        data.resize(total, 0.0f); // Inicializa con ceros
+    }
+
     
     size_t size() const { return data.size(); }
     

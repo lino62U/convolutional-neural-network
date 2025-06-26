@@ -25,18 +25,25 @@ private:
     void initialize_filters(int in_channels, int num_filters, int kernel_size) {
         std::normal_distribution<float> dist(0.0f, std::sqrt(2.0f / (in_channels * kernel_size * kernel_size)));
         std::vector<float> f_data(num_filters * in_channels * kernel_size * kernel_size);
-        for (float& f : f_data) {
-            f = dist(rng);
-        }
+        for (float& f : f_data) f = dist(rng);
+        
         filters = Tensor(f_data, {num_filters, in_channels, kernel_size, kernel_size});
         
         std::vector<float> b_data(num_filters, 0.0f);
         bias = Tensor(b_data, {num_filters});
+        
+        // Todos los valores del filtro serán 1.0
+        //std::vector<float> f_data(num_filters * in_channels * kernel_size * kernel_size, 1.0f);
+        //filters = Tensor(f_data, {num_filters, in_channels, kernel_size, kernel_size});
+
+        // Bias en cero
+        //std::vector<float> b_data(num_filters, 0.0f);
+        //bias = Tensor(b_data, {num_filters});
     }
 
 public:
-    Conv2D(int in_channels, int num_filters, int kernel_size, int pad, int str, std::shared_ptr<Activation> act)
-        : padding(pad), stride(str), activation(act), rng(std::random_device{}()) {
+    Conv2D(int in_channels, int num_filters, int kernel_size, int pad, int str, std::shared_ptr<Activation> act = nullptr)
+    : padding(pad), stride(str), activation(act), rng(std::random_device{}()) {
         if (pad < 0 || str <= 0 || kernel_size <= 0) {
             throw std::runtime_error("Invalid convolution parameters");
         }
@@ -108,8 +115,14 @@ public:
         }
 
         z_cache = Tensor(output_data, {batch_size, num_filters, out_height, out_width});
-        activation_cache = activation->apply_batch(z_cache);
-        return activation_cache;
+        //activation_cache = activation->apply_batch(z_cache);
+        //return activation_cache;
+        if (activation) {
+            activation_cache = activation->apply_batch(z_cache);
+            return activation_cache;
+        }
+        return z_cache;  // No aplica activación
+        
     }
 
     Tensor backward(const Tensor& grad_output) override {
@@ -128,9 +141,18 @@ public:
         int out_width = grad_output.shape[3];
 
         // Compute gradient w.r.t. pre-activation values
-        Tensor grad_z = activation->derivative_batch(z_cache, activation_cache);
-        for (size_t i = 0; i < grad_z.data.size(); ++i) {
-            grad_z.data[i] *= grad_output.data[i];
+        //Tensor grad_z = activation->derivative_batch(z_cache, activation_cache);
+        //for (size_t i = 0; i < grad_z.data.size(); ++i) {
+        //    grad_z.data[i] *= grad_output.data[i];
+        //}
+        Tensor grad_z;
+        if (activation) {
+            grad_z = activation->derivative_batch(z_cache, activation_cache);
+            for (size_t i = 0; i < grad_z.data.size(); ++i) {
+                grad_z.data[i] *= grad_output.data[i];
+            }
+        } else {
+            grad_z = grad_output;  // sin activación, el grad pasa directo
         }
 
         // Compute gradients for filters

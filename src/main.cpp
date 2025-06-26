@@ -3,6 +3,7 @@
 #include <memory>
 
 
+/*
 int main() {
     std::cout << "🚀 Inicio del programa\n";
 
@@ -25,11 +26,13 @@ int main() {
     std::cout << "📝 Descripción: MaxPooling con stride 2 sin padding\n";
 
     Model model;
-    model.add(std::make_shared<Conv2D>(16, 32, 3, 1, 1, std::make_shared<ReLU>())); // 14x14x16 -> 14x14x32
-    //model.add(std::make_shared<Conv2D>(1, 2, 3, 3, 1, "valid"));
-
-    model.add(std::make_shared<MaxPooling2D>(2, 2, 2, "valid"));
+    model.add(std::make_shared<Conv2D>(1, 2, 3, 0, 1));
+    model.add(std::make_shared<ReLUActivationLayer>()); // como capa
+    model.add(std::make_shared<MaxPooling2D>(2, 2));   // solo (size, stride)
     model.add(std::make_shared<Flatten>());
+
+    std::cout << "\n🔬 Demo paso a paso modelo 1\n";
+    model.debug_pipeline_demo(input);
 
     std::cout << "\n🔬 Iniciando demostración paso a paso...\n";
     model.debug_pipeline_demo(input);
@@ -43,9 +46,8 @@ int main() {
     std::cout << "📝 Descripción: AveragePooling con stride 2 sin padding\n";
 
     Model model2;
-    model2.add(std::make_shared<Conv2D>(1, 2, 3, 3, 1, "valid"));
- 
-    model2.add(std::make_shared<AveragePooling2D>(2, 2, 2, "valid"));
+    model2.add(std::make_shared<Conv2D>(1, 2, 3, 0, 1, std::make_shared<ReLU>()));
+    model2.add(std::make_shared<AveragePooling2D>(2, 2));
     model2.add(std::make_shared<Flatten>());
 
     std::cout << "\n🔬 Iniciando demostración paso a paso...\n";
@@ -54,8 +56,8 @@ int main() {
     return 0;
 }
 
+*/
 
-/*
 int main() {
     // Load MNIST training dataset with 1000 samples
     MNISTLoader train_data("data/train-images.idx3-ubyte", "data/train-labels.idx1-ubyte", 1000);
@@ -94,4 +96,3 @@ int main() {
 
     return 0;
 }
-*/
