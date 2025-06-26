@@ -1684,6 +1684,7 @@ public:
                bias_q.total_elements() + bias_k.total_elements() + bias_v.total_elements() + bias_o.total_elements();
     }
 };
+
 class FeedForward : public Layer {
 private:
     Tensor W1;
@@ -1850,14 +1851,15 @@ public:
 
         return x + ff_cache;
     }
-/*
+
     Tensor backward(const Tensor& grad_output) override {
         Tensor grad_ff = ln2->backward(grad_output);
         grad_ff = ff->backward(grad_ff);
         Tensor grad_x = grad_output + grad_ff;
         grad_x = ln1->backward(mhsa->backward(grad_x));
         return grad_x + grad_output;
-    }*/
+    }
+    /*
     Tensor backward(const Tensor& grad_output) override {
         // Paso 1: Gradiente con respecto a la suma final (x + FF)
         Tensor grad_ff_out = grad_output;
@@ -1876,6 +1878,7 @@ public:
         // Nota: no es necesario sumar otra vez grad_output aquí, ya se usó
         return grad_ln1;
     }
+        */
 
     void update_weights(Optimizer* optimizer) override {
         ln1->update_weights(optimizer);
@@ -1889,7 +1892,7 @@ public:
     }
 };
 
-
+/*
 class FilterTokenizer : public Layer {
 private:
     std::shared_ptr<Dense> linear1;  // (C -> L)
@@ -2051,8 +2054,8 @@ public:
         return gamma.total_elements() + beta.total_elements();
     }
 };
-
-
+*/
+/*
 class Projector : public Layer {
 private:
     Dense proj_feature;  // linear1
@@ -2173,6 +2176,7 @@ public:
                norm->num_params();
     }
 };
+*/
 
 // Flatten layer
 class Flatten : public Layer {

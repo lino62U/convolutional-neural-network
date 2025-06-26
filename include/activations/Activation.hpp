@@ -1,28 +1,32 @@
+// include/activations/Activation.hpp
 #pragma once
 #include "core/Layer.hpp"
 
-// Declaración adelantada para evitar inclusión circular
-class Softmax;
+// Clase abstracta que representa una función de activación como capa
+class Activation : public Layer {
+protected:
+    Tensor input_cache;
 
-
-// Activation function class
-class Activation {
 public:
-    virtual float apply(float x) const = 0;
-    virtual float derivative(float x) const = 0;
-    virtual Tensor apply_batch(const Tensor& input) const {
-        std::vector<float> output(input.data.size());
-        for (size_t i = 0; i < input.data.size(); ++i) {
-            output[i] = apply(input.data[i]);
-        }
-        return Tensor(output, input.shape);
+    virtual Tensor activate(const Tensor& x) = 0;
+    virtual Tensor derivative(const Tensor& x) = 0;
+
+    Tensor forward(const Tensor& input, bool training = false) override {
+        input_cache = input;
+        return activate(input);
     }
-    virtual Tensor derivative_batch(const Tensor& input, const Tensor& output) const {
-        std::vector<float> grad(input.data.size());
-        for (size_t i = 0; i < input.data.size(); ++i) {
-            grad[i] = derivative(input.data[i]);
+
+    Tensor backward(const Tensor& grad_output) override {
+        Tensor deriv = derivative(input_cache);
+        Tensor grad_input(deriv.shape);
+        for (size_t i = 0; i < deriv.data.size(); ++i) {
+            grad_input.data[i] = grad_output.data[i] * deriv.data[i];
         }
-        return Tensor(grad, input.shape);
+        return grad_input;
     }
-    virtual ~Activation() {}
+
+    void update_weights(Optimizer*) override {}
+    size_t num_params() const override { return 0; }
+
+    virtual ~Activation() = default;
 };

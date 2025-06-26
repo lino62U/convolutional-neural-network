@@ -7,239 +7,148 @@
 #include <algorithm>
 #include <string>
 
+
+enum class PaddingType { VALID, SAME, CUSTOM };
+
 class Conv2D : public Layer {
 private:
-    Tensor filters; // Shape: {num_filters, in_channels, kernel_height, kernel_width}
-    Tensor bias; // Shape: {num_filters}
-    int padding;
-    int stride;
+    Tensor filters, bias;
+    Tensor filters_grad, bias_grad;
+
+    PaddingType padding_type;
+    int custom_pad = 0;
+    int stride = 1;
+    int computed_padding = 0;
+
     std::shared_ptr<Activation> activation;
+
     Tensor input_cache;
-    Tensor z_cache; // Pre-activation values
-    Tensor activation_cache; // Post-activation values
-    Tensor filters_grad;
-    Tensor bias_grad;
+    Tensor z_cache;
+    Tensor a_cache;
+
     std::mt19937 rng;
 
-    // Initialize filters using He initialization
     void initialize_filters(int in_channels, int num_filters, int kernel_size) {
         std::normal_distribution<float> dist(0.0f, std::sqrt(2.0f / (in_channels * kernel_size * kernel_size)));
         std::vector<float> f_data(num_filters * in_channels * kernel_size * kernel_size);
-        for (float& f : f_data) f = dist(rng);
-        
-        filters = Tensor(f_data, {num_filters, in_channels, kernel_size, kernel_size});
-        
-        std::vector<float> b_data(num_filters, 0.0f);
-        bias = Tensor(b_data, {num_filters});
-        
-        // Todos los valores del filtro serán 1.0
-        //std::vector<float> f_data(num_filters * in_channels * kernel_size * kernel_size, 1.0f);
-        //filters = Tensor(f_data, {num_filters, in_channels, kernel_size, kernel_size});
-
-        // Bias en cero
-        //std::vector<float> b_data(num_filters, 0.0f);
-        //bias = Tensor(b_data, {num_filters});
+        for (auto& f : f_data) f = dist(rng);
+        filters = Tensor(std::move(f_data), {num_filters, in_channels, kernel_size, kernel_size});
+        bias = Tensor(std::vector<float>(num_filters, 0.0f), {num_filters});
     }
 
 public:
-    Conv2D(int in_channels, int num_filters, int kernel_size, int pad, int str, std::shared_ptr<Activation> act = nullptr)
-    : padding(pad), stride(str), activation(act), rng(std::random_device{}()) {
-        if (pad < 0 || str <= 0 || kernel_size <= 0) {
-            throw std::runtime_error("Invalid convolution parameters");
-        }
+    Conv2D(int in_channels, int num_filters, int kernel_size,
+           PaddingType pad_type = PaddingType::VALID, int stride_ = 1,
+           std::shared_ptr<Activation> act = nullptr)
+        : padding_type(pad_type), stride(stride_), activation(std::move(act)), rng(std::random_device{}()) {
         initialize_filters(in_channels, num_filters, kernel_size);
     }
 
+    void set_custom_padding(int pad) {
+        padding_type = PaddingType::CUSTOM;
+        custom_pad = pad;
+    }
+
     Tensor forward(const Tensor& input, bool training = false) override {
-        if (input.shape.size() != 4 || input.shape[1] != filters.shape[1]) {
-            throw std::runtime_error("Invalid input shape for convolution");
-        }
+        const int N = input.shape[0];
+        const int C = input.shape[1];
+        const int H = input.shape[2];
+        const int W = input.shape[3];
+        const int K = filters.shape[2];
+        const int Kw = filters.shape[3];
+        const int F = filters.shape[0];
 
-        int batch_size = input.shape[0];
-        int in_channels = input.shape[1];
-        int in_height = input.shape[2];
-        int in_width = input.shape[3];
-        int num_filters = filters.shape[0];
-        int kernel_height = filters.shape[2];
-        int kernel_width = filters.shape[3];
+        // Padding
+        int pad = 0;
+        if (padding_type == PaddingType::SAME)
+            pad = ((H - 1) * stride + K - H) / 2;
+        else if (padding_type == PaddingType::CUSTOM)
+            pad = custom_pad;
+        computed_padding = pad;
 
-        // Compute output dimensions
-        int out_height = (in_height + 2 * padding - kernel_height) / stride + 1;
-        int out_width = (in_width + 2 * padding - kernel_width) / stride + 1;
-        if (out_height <= 0 || out_width <= 0) {
-            throw std::runtime_error("Invalid output dimensions");
-        }
+        input_cache = input.pad(pad);
 
-        // Pad input
-        std::vector<float> padded_input_data(batch_size * in_channels * (in_height + 2 * padding) * (in_width + 2 * padding), 0.0f);
-        Tensor padded_input(padded_input_data, {batch_size, in_channels, in_height + 2 * padding, in_width + 2 * padding});
-        for (int n = 0; n < batch_size; ++n) {
-            for (int c = 0; c < in_channels; ++c) {
-                for (int h = 0; h < in_height; ++h) {
-                    for (int w = 0; w < in_width; ++w) {
-                        padded_input.data[n * in_channels * (in_height + 2 * padding) * (in_width + 2 * padding) +
-                                         c * (in_height + 2 * padding) * (in_width + 2 * padding) +
-                                         (h + padding) * (in_width + 2 * padding) + (w + padding)] =
-                            input.data[n * in_channels * in_height * in_width + c * in_height * in_width + h * in_width + w];
-                    }
-                }
-            }
-        }
+        const int Hp = input_cache.shape[2];
+        const int Wp = input_cache.shape[3];
+        const int Oh = (Hp - K) / stride + 1;
+        const int Ow = (Wp - Kw) / stride + 1;
 
-        input_cache = padded_input; // Store padded input for backward pass
+        z_cache = Tensor({N, F, Oh, Ow});
+        float* z_data = z_cache.data.data();
+        const float* in_data = input_cache.data.data();
+        const float* f_data = filters.data.data();
+        const float* b_data = bias.data.data();
 
-        // Perform convolution
-        std::vector<float> output_data(batch_size * num_filters * out_height * out_width);
-        for (int n = 0; n < batch_size; ++n) {
-            for (int f = 0; f < num_filters; ++f) {
-                for (int h = 0; h < out_height; ++h) {
-                    for (int w = 0; w < out_width; ++w) {
-                        float sum = bias.data[f];
-                        for (int c = 0; c < in_channels; ++c) {
-                            for (int kh = 0; kh < kernel_height; ++kh) {
-                                for (int kw = 0; kw < kernel_width; ++kw) {
-                                    int input_h = h * stride + kh;
-                                    int input_w = w * stride + kw;
-                                    sum += padded_input.data[n * in_channels * (in_height + 2 * padding) * (in_width + 2 * padding) +
-                                                            c * (in_height + 2 * padding) * (in_width + 2 * padding) +
-                                                            input_h * (in_width + 2 * padding) + input_w] *
-                                           filters.data[f * in_channels * kernel_height * kernel_width +
-                                                        c * kernel_height * kernel_width + kh * kernel_width + kw];
+        for (int n = 0; n < N; ++n)
+            for (int f = 0; f < F; ++f)
+                for (int h = 0; h < Oh; ++h)
+                    for (int w = 0; w < Ow; ++w) {
+                        float sum = b_data[f];
+                        for (int c = 0; c < C; ++c)
+                            for (int kh = 0; kh < K; ++kh)
+                                for (int kw = 0; kw < Kw; ++kw) {
+                                    int ih = h * stride + kh;
+                                    int iw = w * stride + kw;
+                                    int in_idx = ((n * C + c) * Hp + ih) * Wp + iw;
+                                    int filt_idx = ((f * C + c) * K + kh) * Kw + kw;
+                                    sum += in_data[in_idx] * f_data[filt_idx];
                                 }
-                            }
-                        }
-                        output_data[n * num_filters * out_height * out_width + f * out_height * out_width + h * out_width + w] = sum;
+                        int out_idx = ((n * F + f) * Oh + h) * Ow + w;
+                        z_data[out_idx] = sum;
                     }
-                }
-            }
-        }
 
-        z_cache = Tensor(output_data, {batch_size, num_filters, out_height, out_width});
-        //activation_cache = activation->apply_batch(z_cache);
-        //return activation_cache;
         if (activation) {
-            activation_cache = activation->apply_batch(z_cache);
-            return activation_cache;
+            a_cache = activation->forward(z_cache, training);
+            return a_cache;
         }
-        return z_cache;  // No aplica activación
-        
+        return z_cache;
     }
 
     Tensor backward(const Tensor& grad_output) override {
-        if (grad_output.shape != activation_cache.shape) {
-            throw std::runtime_error("Gradient shape mismatch in convolution backward");
-        }
+        const Tensor& grad_z = activation ? activation->backward(grad_output) : grad_output;
 
-        int batch_size = input_cache.shape[0];
-        int in_channels = input_cache.shape[1];
-        int in_height = input_cache.shape[2] - 2 * padding;
-        int in_width = input_cache.shape[3] - 2 * padding;
-        int num_filters = filters.shape[0];
-        int kernel_height = filters.shape[2];
-        int kernel_width = filters.shape[3];
-        int out_height = grad_output.shape[2];
-        int out_width = grad_output.shape[3];
+        const int N = input_cache.shape[0];
+        const int C = input_cache.shape[1];
+        const int Hp = input_cache.shape[2];
+        const int Wp = input_cache.shape[3];
+        const int F = filters.shape[0];
+        const int K = filters.shape[2];
+        const int Kw = filters.shape[3];
+        const int Oh = grad_z.shape[2];
+        const int Ow = grad_z.shape[3];
 
-        // Compute gradient w.r.t. pre-activation values
-        //Tensor grad_z = activation->derivative_batch(z_cache, activation_cache);
-        //for (size_t i = 0; i < grad_z.data.size(); ++i) {
-        //    grad_z.data[i] *= grad_output.data[i];
-        //}
-        Tensor grad_z;
-        if (activation) {
-            grad_z = activation->derivative_batch(z_cache, activation_cache);
-            for (size_t i = 0; i < grad_z.data.size(); ++i) {
-                grad_z.data[i] *= grad_output.data[i];
-            }
-        } else {
-            grad_z = grad_output;  // sin activación, el grad pasa directo
-        }
+        filters_grad = Tensor::zeros(filters.shape);
+        bias_grad = Tensor::zeros(bias.shape);
+        Tensor grad_input(input_cache.shape);
+        grad_input.fill(0.0f);
 
-        // Compute gradients for filters
-        std::vector<float> grad_filters_data(filters.size(), 0.0f);
-        for (int f = 0; f < num_filters; ++f) {
-            for (int c = 0; c < in_channels; ++c) {
-                for (int kh = 0; kh < kernel_height; ++kh) {
-                    for (int kw = 0; kw < kernel_width; ++kw) {
-                        float sum = 0.0f;
-                        for (int n = 0; n < batch_size; ++n) {
-                            for (int h = 0; h < out_height; ++h) {
-                                for (int w = 0; w < out_width; ++w) {
-                                    sum += input_cache.data[n * in_channels * (in_height + 2 * padding) * (in_width + 2 * padding) +
-                                                           c * (in_height + 2 * padding) * (in_width + 2 * padding) +
-                                                           (h * stride + kh) * (in_width + 2 * padding) + (w * stride + kw)] *
-                                           grad_z.data[n * num_filters * out_height * out_width +
-                                                       f * out_height * out_width + h * out_width + w];
+        float* grad_in_data = grad_input.data.data();
+        const float* gradz_data = grad_z.data.data();
+        const float* in_data = input_cache.data.data();
+        float* filt_grad_data = filters_grad.data.data();
+        float* bias_grad_data = bias_grad.data.data();
+        const float* filt_data = filters.data.data();
+
+        for (int n = 0; n < N; ++n)
+            for (int f = 0; f < F; ++f)
+                for (int h = 0; h < Oh; ++h)
+                    for (int w = 0; w < Ow; ++w) {
+                        float d_out = gradz_data[((n * F + f) * Oh + h) * Ow + w];
+                        bias_grad_data[f] += d_out;
+
+                        for (int c = 0; c < C; ++c)
+                            for (int kh = 0; kh < K; ++kh)
+                                for (int kw = 0; kw < Kw; ++kw) {
+                                    int ih = h * stride + kh;
+                                    int iw = w * stride + kw;
+                                    int in_idx = ((n * C + c) * Hp + ih) * Wp + iw;
+                                    int filt_idx = ((f * C + c) * K + kh) * Kw + kw;
+                                    filt_grad_data[filt_idx] += in_data[in_idx] * d_out;
+                                    grad_in_data[in_idx] += filt_data[filt_idx] * d_out;
                                 }
-                            }
-                        }
-                        grad_filters_data[f * in_channels * kernel_height * kernel_width +
-                                         c * kernel_height * kernel_width + kh * kernel_width + kw] = sum;
                     }
-                }
-            }
-        }
-        filters_grad = Tensor(grad_filters_data, filters.shape);
 
-        // Compute gradients for bias
-        std::vector<float> grad_bias_data(num_filters, 0.0f);
-        for (int f = 0; f < num_filters; ++f) {
-            for (int n = 0; n < batch_size; ++n) {
-                for (int h = 0; h < out_height; ++h) {
-                    for (int w = 0; w < out_width; ++w) {
-                        grad_bias_data[f] += grad_z.data[n * num_filters * out_height * out_width +
-                                                        f * out_height * out_width + h * out_width + w];
-                    }
-                }
-            }
-        }
-        bias_grad = Tensor(grad_bias_data, bias.shape);
-
-        // Compute gradient w.r.t. input
-        std::vector<float> grad_input_data(input_cache.size(), 0.0f);
-        for (int n = 0; n < batch_size; ++n) {
-            for (int c = 0; c < in_channels; ++c) {
-                for (int h = 0; h < in_height; ++h) {
-                    for (int w = 0; w < in_width; ++w) {
-                        for (int f = 0; f < num_filters; ++f) {
-                            for (int kh = 0; kh < kernel_height; ++kh) {
-                                for (int kw = 0; kw < kernel_width; ++kw) {
-                                    int out_h = (h - kh + padding) / stride;
-                                    int out_w = (w - kw + padding) / stride;
-                                    if (out_h >= 0 && out_h < out_height && (h - kh + padding) % stride == 0 &&
-                                        out_w >= 0 && out_w < out_width && (w - kw + padding) % stride == 0) {
-                                        grad_input_data[n * in_channels * (in_height + 2 * padding) * (in_width + 2 * padding) +
-                                                       c * (in_height + 2 * padding) * (in_width + 2 * padding) +
-                                                       (h + padding) * (in_width + 2 * padding) + (w + padding)] +=
-                                            grad_z.data[n * num_filters * out_height * out_width +
-                                                       f * out_height * out_width + out_h * out_width + out_w] *
-                                            filters.data[f * in_channels * kernel_height * kernel_width +
-                                                        c * kernel_height * kernel_width + kh * kernel_width + kw];
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Extract unpadded gradient
-        std::vector<float> grad_input_unpadded(batch_size * in_channels * in_height * in_width);
-        for (int n = 0; n < batch_size; ++n) {
-            for (int c = 0; c < in_channels; ++c) {
-                for (int h = 0; h < in_height; ++h) {
-                    for (int w = 0; w < in_width; ++w) {
-                        grad_input_unpadded[n * in_channels * in_height * in_width + c * in_height * in_width + h * in_width + w] =
-                            grad_input_data[n * in_channels * (in_height + 2 * padding) * (in_width + 2 * padding) +
-                                           c * (in_height + 2 * padding) * (in_width + 2 * padding) +
-                                           (h + padding) * (in_width + 2 * padding) + (w + padding)];
-                    }
-                }
-            }
-        }
-
-        return Tensor(grad_input_unpadded, {batch_size, in_channels, in_height, in_width});
+        return grad_input.unpad(computed_padding);
     }
 
     void update_weights(Optimizer* optimizer) override {

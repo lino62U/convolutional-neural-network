@@ -2,7 +2,7 @@
 #pragma once
 #include "core/Layer.hpp"
 #include "activations/ReLU.hpp"
-
+/*
 class ReLUActivationLayer : public Layer {
 private:
     ReLU relu;
@@ -26,4 +26,4 @@ public:
 
     void update_weights(Optimizer*) override {}
     size_t num_params() const override { return 0; }
-};
+};*/

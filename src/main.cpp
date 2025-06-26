@@ -57,41 +57,45 @@ int main() {
 }
 
 */
-
 int main() {
-    // Load MNIST training dataset with 1000 samples
+    std::cout << "🔁 Cargando datos...\n";
     MNISTLoader train_data("data/train-images.idx3-ubyte", "data/train-labels.idx1-ubyte", 1000);
-
-    // Load MNIST test dataset with 1000 samples
     MNISTLoader test_data("data/t10k-images.idx3-ubyte", "data/t10k-labels.idx1-ubyte", 1000);
 
-    // Create CNN model
+    std::cout << "🧠 Construyendo modelo CNN...\n";
     Model model;
-    model.add(std::make_shared<Conv2D>(1, 16, 3, 1, 1, std::make_shared<ReLU>())); // 28x28x1 -> 28x28x16
-    model.add(std::make_shared<MaxPooling2D>(2, 2)); // 28x28x16 -> 14x14x16
 
-    model.add(std::make_shared<Dropout>(0.3f)); // Dropout 30%
+    // Entrada: (N, 1, 28, 28)
+    model.add(std::make_shared<Conv2D>(1, 8, 3, PaddingType::VALID, 1));  // 28x28x1 -> 26x26x8 (kernel 3x3 reduce 2px en cada dimensión)
+    model.add(std::make_shared<ReLU>());
+    model.add(std::make_shared<MaxPooling2D>(2, 2));          // 26x26x8 -> 13x13x8
+    model.add(std::make_shared<Dropout>(0.25f));
+
+    model.add(std::make_shared<Conv2D>(8, 16, 3, PaddingType::VALID, 1)); // 13x13x8 -> 11x11x16
+    model.add(std::make_shared<ReLU>());
+    model.add(std::make_shared<MaxPooling2D>(2, 2));          // 11x11x16 -> 5x5x16 (redondeo hacia abajo)
+    model.add(std::make_shared<Dropout>(0.25f));
+
+    model.add(std::make_shared<Flatten>());                 // 5x5x16 = 400
+    model.add(std::make_shared<Dense>(400, 64));            // 400 -> 64
+    model.add(std::make_shared<ReLU>());
+    model.add(std::make_shared<Dropout>(0.5f));
+
+    model.add(std::make_shared<Dense>(64, 10));             // 64 -> 10
+    model.add(std::make_shared<Softmax>());
 
 
-    model.add(std::make_shared<Conv2D>(16, 32, 3, 1, 1, std::make_shared<ReLU>())); // 14x14x16 -> 14x14x32
-    model.add(std::make_shared<MaxPooling2D>(2, 2)); // 14x14x32 -> 7x7x32
-    model.add(std::make_shared<Flatten>()); // 7x7x32 -> 1568
-    model.add(std::make_shared<Dense>(1568, 128, std::make_shared<ReLU>())); // 1568 -> 128
-
-     model.add(std::make_shared<Dropout>(0.5f)); // Dropout 50%
-    model.add(std::make_shared<Dense>(128, 10, std::make_shared<Softmax>())); // 128 -> 10
-
-    // Add accuracy metric
+    std::cout << "⚙️  Configurando modelo...\n";
     model.add_metric(std::make_shared<Accuracy>());
+    model.compile(
+        std::make_shared<CrossEntropyLoss>(),
+        std::make_shared<Adam>(0.001f),
+        std::make_shared<Logger>()
+    );
 
-    // Compile with Cross-Entropy loss and Adam optimizer
-    model.compile(std::make_shared<CrossEntropyLoss>(), 
-                  std::make_shared<Adam>(0.001f), 
-                  std::make_shared<Logger>());
-
-    // Train with evaluation
-    model.fit(train_data.images, train_data.labels, 
-              test_data.images, test_data.labels, 
+    std::cout << "🚀 Entrenando...\n";
+    model.fit(train_data.images, train_data.labels,
+              test_data.images, test_data.labels,
               10, 32);
 
     return 0;
