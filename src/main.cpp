@@ -92,7 +92,7 @@ int main() {
     for (int d : X_val.shape) std::cout << d << " ";
     std::cout << std::endl;
 
-    // Create CNN model
+    std::cout << "🧠 Construyendo modelo Vision Transformer...\n";
     Model model;
 
     // 28×28×3 → 28×28×16

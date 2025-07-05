@@ -12,10 +12,9 @@
 #include "activations/ReLU.hpp"
 #include "activations/Sigmoid.hpp"
 #include "activations/Softmax.hpp"
-#include "activations/ReLUActivationLayer.hpp"
 
 // Layers
-#include "layers/Dense.hpp"
+#include "layers/Linear.hpp"
 #include "layers/Conv2D.hpp"
 #include "layers/Flatten.hpp"
 #include "layers/MaxPooling2D.hpp"
@@ -34,6 +33,7 @@
 // Utils (si los necesitas)
 #include "utils/DatasetLoader.hpp"
 #include "utils/Logger.hpp"
+#include "utils/DataUtils.hpp"
 
 
 // include/metrics/Metric.hpp

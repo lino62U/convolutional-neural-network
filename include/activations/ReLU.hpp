@@ -1,10 +1,21 @@
 // include/activations/ReLU.hpp
 #pragma once
-
-#include "Activation.hpp"
+#include "activations/Activation.hpp"
+#include <algorithm>
 
 class ReLU : public Activation {
 public:
-    float apply(float x) const override { return std::max(0.0f, x); }
-    float derivative(float x) const override { return x > 0 ? 1.0f : 0.0f; }
+    Tensor activate(const Tensor& x) override {
+        std::vector<float> out(x.data.size());
+        for (size_t i = 0; i < x.data.size(); ++i)
+            out[i] = std::max(0.0f, x.data[i]);
+        return Tensor(out, x.shape);
+    }
+
+    Tensor derivative(const Tensor& x) override {
+        std::vector<float> grad(x.data.size());
+        for (size_t i = 0; i < x.data.size(); ++i)
+            grad[i] = x.data[i] > 0 ? 1.0f : 0.0f;
+        return Tensor(grad, x.shape);
+    }
 };

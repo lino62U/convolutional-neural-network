@@ -144,6 +144,7 @@ public:
 
             training_mode = true; // Set to training mode
 
+//            std::cout << "\n📦 Época " << epoch + 1 << "/" << epochs << "\n";
             for (int b = 0; b < num_batches; ++b) {
                 // Create batch
                 int start = b * batch_size;
