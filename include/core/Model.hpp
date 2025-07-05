@@ -115,19 +115,19 @@ public:
 
         // Log evaluation results
         if (logger) {
-            std::string log_message = "Evaluation - Loss: " + std::to_string(eval_loss);
+            std::vector<std::pair<std::string, float>> val_metrics_vec;
             for (size_t m = 0; m < metrics.size(); ++m) {
-                log_message += ", " + metrics[m]->name() + ": " + std::to_string(eval_metrics[m]);
+                val_metrics_vec.emplace_back(metrics[m]->name(), eval_metrics[m]);
             }
-            logger->log(log_message);
+            logger->log_eval(eval_loss, val_metrics_vec);
         }
     }
 
-    void fit(const Tensor& X, const Tensor& y, const Tensor& X_test, const Tensor& y_test, int epochs, int batch_size = 32) {
+    void fit(const Tensor& X, const Tensor& y, const Tensor& X_val, const Tensor& y_val, int epochs, int batch_size = 32) {
         if (X.shape[0] != y.shape[0]) {
             throw std::runtime_error("Input and target shape mismatch in training");
         }
-        if (X_test.shape[0] != y_test.shape[0]) {
+        if (X_val.shape[0] != y_val.shape[0]) {
             throw std::runtime_error("Input and target shape mismatch in test set");
         }
 
@@ -200,20 +200,37 @@ public:
                 m /= num_batches;
             }
 
+            // Evaluate on test set
+            float eval_loss = 0.0f;
+            std::vector<float> eval_metrics(metrics.size(), 0.0f);
+            {
+                training_mode = false;
+                Tensor y_pred = forward(X_val, false);
+                eval_loss = loss->compute(y_pred, y_val);
+
+                for (size_t m = 0; m < metrics.size(); ++m) {
+                    eval_metrics[m] = metrics[m]->compute(y_pred, y_val);
+                }
+            }
             // Log training results
             if (logger) {
-                std::string log_message = "Epoch " + std::to_string(epoch + 1) + "/" + 
-                                         std::to_string(epochs) + ", Train Loss: " + 
-                                         std::to_string(epoch_loss);
+                std::vector<std::pair<std::string, float>> train_metrics_vec;
                 for (size_t m = 0; m < metrics.size(); ++m) {
-                    log_message += ", Train " + metrics[m]->name() + ": " + 
-                                  std::to_string(epoch_metrics[m]);
+                    train_metrics_vec.emplace_back(metrics[m]->name(), epoch_metrics[m]);
                 }
-                logger->log(log_message);
+
+                std::vector<std::pair<std::string, float>> val_metrics_vec;
+                for (size_t m = 0; m < metrics.size(); ++m) {
+                    val_metrics_vec.emplace_back(metrics[m]->name(), eval_metrics[m]);
+                }
+
+                logger->log_epoch(epoch + 1, epochs,
+                                epoch_loss, train_metrics_vec,
+                                eval_loss, val_metrics_vec);
             }
 
             // Evaluate on test set
-            evaluate(X_test, y_test, batch_size);
+            //evaluate(X_val, y_val, batch_size);
         }
     }
 
