@@ -41,6 +41,10 @@ public:
         metrics.push_back(metric);
     }
 
+    const std::vector<std::shared_ptr<Layer>>& get_layers() const {
+        return layers;
+    }
+
     void compile(std::shared_ptr<Loss> loss_fn, std::shared_ptr<Optimizer> opt,
                  std::shared_ptr<Logger> log = nullptr) {
         loss = loss_fn;

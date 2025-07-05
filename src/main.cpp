@@ -58,41 +58,96 @@ int main() {
 
 */
 
+void replicate_channels(Tensor& batch, int channels) {
+    if (batch.shape.size() != 4 || batch.shape[1] != 1)
+        throw std::runtime_error("Expected shape [N, 1, H, W]");
+
+    int batch_size = batch.shape[0];
+    int height = batch.shape[2];
+    int width = batch.shape[3];
+    int hw = height * width;
+
+    std::vector<float> new_data(batch_size * channels * hw);
+
+    for (int n = 0; n < batch_size; ++n) {
+        const float* src = batch.data.data() + n * hw;
+        for (int c = 0; c < channels; ++c) {
+            float* dst = new_data.data() + (n * channels + c) * hw;
+            std::copy(src, src + hw, dst);
+        }
+    }
+
+    batch.data = std::move(new_data);
+    batch.shape = {batch_size, channels, height, width};
+}
+
+
+
+
+
 int main() {
     // Load MNIST training dataset with 1000 samples
-    MNISTLoader train_data("data/train-images.idx3-ubyte", "data/train-labels.idx1-ubyte", 1000);
+    MNISTLoader train_data("data/fashionmnist/train-images-idx3-ubyte", "data/fashionmnist/train-labels-idx1-ubyte", 1000);
 
     // Load MNIST test dataset with 1000 samples
-    MNISTLoader test_data("data/t10k-images.idx3-ubyte", "data/t10k-labels.idx1-ubyte", 1000);
+    MNISTLoader test_data("data/fashionmnist/t10k-images-idx3-ubyte", "data/fashionmnist/t10k-labels-idx1-ubyte", 1000);
+
+    // Replicamos el canal 3 veces para obtener imágenes 28x28x3
+    replicate_channels(train_data.images, 3);
+    replicate_channels(test_data.images, 3);
+
+    std::cout << "Train shape: ";
+    for (int d : train_data.images.shape) std::cout << d << " ";
+    std::cout << std::endl;
+
+
 
     // Create CNN model
-    Model model;
-    model.add(std::make_shared<Conv2D>(1, 16, 3, 1, 1, std::make_shared<ReLU>())); // 28x28x1 -> 28x28x16
-    model.add(std::make_shared<MaxPooling2D>(2, 2)); // 28x28x16 -> 14x14x16
+     Model model;
 
-    model.add(std::make_shared<Dropout>(0.3f)); // Dropout 30%
+    // 28×28×1 → 28×28×16
+    model.add(std::make_shared<Conv2D>(
+        /*in*/3, /*out*/16, /*k*/3, /*s*/1, /*p*/1,
+        std::make_shared<ReLU>()));
+    // 28×28×16 → 14×14×16
+    model.add(std::make_shared<MaxPooling2D>(2, 2));
 
+    // 14×14×16 → 14×14×64
+    model.add(std::make_shared<Conv2D>(
+        /*in*/16, /*out*/64, /*k*/3, /*s*/1, /*p*/1,
+        std::make_shared<ReLU>()));
+    // 14×14×64 → 7×7×64
+    model.add(std::make_shared<MaxPooling2D>(2, 2));
 
-    model.add(std::make_shared<Conv2D>(16, 32, 3, 1, 1, std::make_shared<ReLU>())); // 14x14x16 -> 14x14x32
-    model.add(std::make_shared<MaxPooling2D>(2, 2)); // 14x14x32 -> 7x7x32
-    model.add(std::make_shared<Flatten>()); // 7x7x32 -> 1568
-    model.add(std::make_shared<Dense>(1568, 128, std::make_shared<ReLU>())); // 1568 -> 128
+    // 7×7×64 → 3136
+    model.add(std::make_shared<Flatten>());
 
-     model.add(std::make_shared<Dropout>(0.5f)); // Dropout 50%
-    model.add(std::make_shared<Dense>(128, 10, std::make_shared<Softmax>())); // 128 -> 10
+    // 3136 → 16
+    model.add(std::make_shared<Dense>(
+        3136, 10, std::make_shared<Softmax>()));
 
-    // Add accuracy metric
+    /* ---------------------- 1. Resumen del modelo ----------------- */
+    std::cout << "Modelo:\n";
+    std::cout << " - Parámetros: " << model.num_params() << "\n";
+    std::cout << " - Capas:\n";
+    for (const auto& layer : model.get_layers()) {
+        // Usa typeid para mostrar el nombre de la clase de la capa
+        std::cout << "   - " << typeid(*layer).name() << "\n";
+    }   
+
+    // Métrica
     model.add_metric(std::make_shared<Accuracy>());
 
-    // Compile with Cross-Entropy loss and Adam optimizer
-    model.compile(std::make_shared<CrossEntropyLoss>(), 
-                  std::make_shared<Adam>(0.001f), 
-                  std::make_shared<Logger>());
+    /* ---------------------- 3. Compilación ------------------------- */
+    model.compile(
+        std::make_shared<CrossEntropyLoss>(),
+        std::make_shared<SGD>(0.002f),   // LR = 0.002
+        std::make_shared<Logger>());
 
-    // Train with evaluation
-    model.fit(train_data.images, train_data.labels, 
-              test_data.images, test_data.labels, 
-              10, 32);
-
-    return 0;
+    /* ---------------------- 4. Entrenamiento ----------------------- */
+    model.fit(train_data.images, train_data.labels,
+              test_data.images,  test_data.labels,
+              /*épocas*/20,
+              /*batch*/1);
+    /* ---------------------- 5. Evaluación ------------------------- */
 }
