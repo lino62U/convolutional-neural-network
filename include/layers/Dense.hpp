@@ -55,6 +55,9 @@ public:
     size_t num_params() const override {
         return W.total_elements() + b.total_elements();
     }
+    const Tensor& get_net_cache() const {
+        return net_cache;
+    }
 
     ~Dense() override = default;
 };

@@ -1,3 +1,358 @@
+#pragma once
+
+#include "core/Layer.hpp"
+#include <limits>
+#include <stdexcept>
+#include <cmath>
+
+/*
+class MultiHeadSelfAttention : public Layer {
+private:
+    int embed_dim;
+    int num_heads;
+    Tensor W_q, W_k, W_v, W_o;
+    Tensor bias_q, bias_k, bias_v, bias_o;
+    Tensor q_cache, k_cache, v_cache, attn_cache, input_cache, out_2d_final_cache;
+    float dropout_rate;
+    Tensor mask;
+    std::mt19937 rng;
+    Tensor W_q_grad, W_k_grad, W_v_grad, W_o_grad;
+    Tensor bias_q_grad, bias_k_grad, bias_v_grad, bias_o_grad;
+    
+    void initialize_weights() {
+        int head_dim = embed_dim / num_heads;
+        std::normal_distribution<float> dist(0.0f, std::sqrt(2.0f / embed_dim));
+        std::vector<float> w_data(embed_dim * embed_dim);
+        std::vector<float> b_data(embed_dim);
+        for (float& w : w_data) w = dist(rng);
+        for (float& b : b_data) b = 0.0f;
+        W_q = Tensor(w_data, {embed_dim, embed_dim});
+        W_k = Tensor(w_data, {embed_dim, embed_dim});
+        W_v = Tensor(w_data, {embed_dim, embed_dim});
+        W_o = Tensor(w_data, {embed_dim, embed_dim});
+        bias_q = Tensor(b_data, {embed_dim});
+        bias_k = Tensor(b_data, {embed_dim});
+        bias_v = Tensor(b_data, {embed_dim});
+        bias_o = Tensor(b_data, {embed_dim});
+    }
+    /*
+    void initialize_weights() {
+        std::normal_distribution<float> dist(0.0f, std::sqrt(2.0f / embed_dim));
+
+        auto init_weight = [&](Tensor& W) {
+            std::vector<float> data(embed_dim * embed_dim);
+            for (float& w : data) w = dist(rng);
+            W = Tensor(data, {embed_dim, embed_dim});
+        };
+
+        auto init_bias = [&](Tensor& b) {
+            std::vector<float> data(embed_dim, 0.0f);
+            b = Tensor(data, {embed_dim});
+        };
+
+        init_weight(W_q);
+        init_weight(W_k);
+        init_weight(W_v);
+        init_weight(W_o);
+
+        init_bias(bias_q);
+        init_bias(bias_k);
+        init_bias(bias_v);
+        init_bias(bias_o);
+    }
+   
+
+public:
+    MultiHeadSelfAttention(int embed_dim, int num_heads, float dropout_rate = 0.0f)
+        : embed_dim(embed_dim), num_heads(num_heads), dropout_rate(dropout_rate), rng(std::random_device{}()) {
+        if (embed_dim % num_heads != 0) {
+            throw std::runtime_error("embed_dim must be divisible by num_heads");
+        }
+        initialize_weights();
+    }
+
+Tensor forward(const Tensor& input, bool training = false) override {
+    int batch_size = input.shape[0];
+    int seq_len = input.shape[1];
+    int head_dim = embed_dim / num_heads;
+    input_cache = input;
+
+    // Proyección lineal: [B, S, E] -> [B*S, E]
+    Tensor input_2d(input.data, {batch_size * seq_len, embed_dim});
+    Tensor Q = input_2d.matmul(W_q) + bias_q;
+    Tensor K = input_2d.matmul(W_k) + bias_k;
+    Tensor V = input_2d.matmul(W_v) + bias_v;
+
+    // Reshape: [B*S, E] -> [B, S, H, D] -> [B, H, S, D] → [B*H, S, D]
+    Q = Q.reshape({batch_size, seq_len, num_heads, head_dim}).transpose(1, 2).reshape({batch_size * num_heads, seq_len, head_dim});
+    K = K.reshape({batch_size, seq_len, num_heads, head_dim}).transpose(1, 2).reshape({batch_size * num_heads, seq_len, head_dim});
+    V = V.reshape({batch_size, seq_len, num_heads, head_dim}).transpose(1, 2).reshape({batch_size * num_heads, seq_len, head_dim});
+
+    q_cache = Q;
+    k_cache = K;
+    v_cache = V;
+
+    // K^T: [B*H, D, S]
+    Tensor K_trans = K.transpose(1, 2);
+
+    std::cout << "[MHSA] Q shape: " << Q.shape_str() << std::endl;
+    std::cout << "[MHSA] K^T shape: " << K_trans.shape_str() << std::endl;
+
+    // Atención: Q x K^T -> [B*H, S, S]
+    Tensor scores = Q.matmul(K_trans) / std::sqrt((float)head_dim);
+
+    // Softmax
+    scores = scores.softmax();
+    attn_cache = scores;
+
+    // Dropout opcional
+    if (dropout_rate > 0.0f && training) {
+        mask = scores.dropout_mask(dropout_rate, rng);
+        scores = scores * mask;
+    }
+
+    // Atención x V → [B*H, S, D]
+    Tensor out = scores.matmul(V);
+
+    // Reshape: [B*H, S, D] → [B, H, S, D] → [B, S, H, D] → [B, S, E]
+    out = out.reshape({batch_size, num_heads, seq_len, head_dim})
+             .transpose(1, 2)
+             .reshape({batch_size * seq_len, embed_dim});
+    out_2d_final_cache = out;
+
+    std::cout << "[MHSA] out shape: " << out.shape_str() << std::endl;
+    std::cout << "[MHSA] W_o shape: " << W_o.shape_str() << std::endl;
+
+    // Proyección final
+    Tensor result = out.matmul(W_o) + bias_o;
+
+    // Volver a [B, S, E]
+    Tensor output = result.reshape({batch_size, seq_len, embed_dim});
+    return output;
+}
+
+    Tensor backward(const Tensor& grad_output) override {
+        int batch_size = grad_output.shape[0];
+        int seq_len = grad_output.shape[1];
+        int head_dim = embed_dim / num_heads;
+
+        // Reshape grad_output to [batch_size * seq_len, embed_dim]
+        Tensor grad_output_2d(grad_output.data, {batch_size * seq_len, embed_dim});
+
+        // Backward through W_o and bias_o
+        W_o_grad = out_2d_final_cache.transpose().matmul(grad_output_2d);
+        std::vector<float> bias_o_grad_data(embed_dim, 0.0f);
+        for (int i = 0; i < batch_size * seq_len; ++i) {
+            for (int d = 0; d < embed_dim; ++d) {
+                bias_o_grad_data[d] += grad_output_2d.data[i * embed_dim + d];
+            }
+        }
+        bias_o_grad = Tensor(bias_o_grad_data, {embed_dim});
+        Tensor grad_out_2d = grad_output_2d.matmul(W_o.transpose());
+
+        // Reshape grad_out_2d to [batch_size, seq_len, num_heads, head_dim]
+        std::vector<float> grad_out_data(batch_size * seq_len * num_heads * head_dim);
+        for (int n = 0; n < batch_size; ++n) {
+            for (int p = 0; p < seq_len; ++p) {
+                for (int h = 0; h < num_heads; ++h) {
+                    for (int d = 0; d < head_dim; ++d) {
+                        int idx = n * seq_len * num_heads * head_dim + p * num_heads * head_dim + h * head_dim + d;
+                        int src_idx = n * seq_len * embed_dim + p * embed_dim + h * head_dim + d;
+                        grad_out_data[idx] = grad_out_2d.data[src_idx];
+                    }
+                }
+            }
+        }
+        Tensor grad_out(grad_out_data, {batch_size, seq_len, num_heads, head_dim});
+
+        // Reshape grad_out to [batch_size * num_heads, seq_len, head_dim]
+        std::vector<float> grad_out_2d_data(batch_size * num_heads * seq_len * head_dim);
+        for (int n = 0; n < batch_size; ++n) {
+            for (int h = 0; h < num_heads; ++h) {
+                for (int p = 0; p < seq_len; ++p) {
+                    for (int d = 0; d < head_dim; ++d) {
+                        int idx = (n * num_heads + h) * seq_len * head_dim + p * head_dim + d;
+                        int src_idx = n * seq_len * num_heads * head_dim + p * num_heads * head_dim + h * head_dim + d;
+                        grad_out_2d_data[idx] = grad_out.data[src_idx];
+                    }
+                }
+            }
+        }
+        Tensor grad_out_2d_reshaped(grad_out_2d_data, {batch_size * num_heads, seq_len, head_dim});
+
+        // Reshape attn_cache to [batch_size * num_heads, seq_len, seq_len]
+        std::vector<float> attn_2d_data(batch_size * num_heads * seq_len * seq_len);
+        for (int n = 0; n < batch_size; ++n) {
+            for (int h = 0; h < num_heads; ++h) {
+                for (int i = 0; i < seq_len; ++i) {
+                    for (int j = 0; j < seq_len; ++j) {
+                        int idx = (n * num_heads + h) * seq_len * seq_len + i * seq_len + j;
+                        int src_idx = n * num_heads * seq_len * seq_len + h * seq_len * seq_len + i * seq_len + j;
+                        attn_2d_data[idx] = attn_cache.data[src_idx];
+                    }
+                }
+            }
+        }
+        Tensor attn_2d(attn_2d_data, {batch_size * num_heads, seq_len, seq_len});
+
+        // Backward through attention: grad_scores_2d = grad_out_2d_reshaped * attn_2d^T
+        Tensor grad_scores_2d = attn_2d.transpose().matmul(grad_out_2d_reshaped);
+
+        //std::cout << "Backward grad_scores_2d shape: {";
+        //for (int s : grad_scores_2d.shape) std::cout << s << ",";
+        //std::cout << "} mask shape: {";
+        //for (int s : mask.shape) std::cout << s << ",";
+        //std::cout << "}\n";
+
+        // Apply dropout mask
+        if (dropout_rate > 0.0f) {
+            grad_scores_2d = grad_scores_2d * mask;
+        }
+
+        // Softmax backward
+        std::vector<float> grad_attn_2d_data(batch_size * num_heads * seq_len * seq_len);
+        for (int n = 0; n < batch_size * num_heads; ++n) {
+            for (int i = 0; i < seq_len; ++i) {
+                float sum = 0.0f;
+                for (int j = 0; j < seq_len; ++j) {
+                    int idx = n * seq_len * seq_len + i * seq_len + j;
+                    sum += attn_2d.data[idx] * grad_scores_2d.data[idx];
+                }
+                for (int j = 0; j < seq_len; ++j) {
+                    int idx = n * seq_len * seq_len + i * seq_len + j;
+                    grad_attn_2d_data[idx] = grad_scores_2d.data[idx] - sum * attn_2d.data[idx];
+                }
+            }
+        }
+        Tensor grad_attn_2d(grad_attn_2d_data, {batch_size * num_heads, seq_len, seq_len});
+
+        // Reshape grad_attn_2d to [batch_size, num_heads, seq_len, seq_len]
+        std::vector<float> grad_attn_data(batch_size * num_heads * seq_len * seq_len);
+        for (int n = 0; n < batch_size; ++n) {
+            for (int h = 0; h < num_heads; ++h) {
+                for (int i = 0; i < seq_len; ++i) {
+                    for (int j = 0; j < seq_len; ++j) {
+                        int idx = n * num_heads * seq_len * seq_len + h * seq_len * seq_len + i * seq_len + j;
+                        int src_idx = (n * num_heads + h) * seq_len * seq_len + i * seq_len + j;
+                        grad_attn_data[idx] = grad_attn_2d.data[src_idx];
+                    }
+                }
+            }
+        }
+        Tensor grad_attn(grad_attn_data, {batch_size, num_heads, seq_len, seq_len});
+
+        // Reshape q_cache, k_cache, v_cache to [batch_size * num_heads, seq_len, head_dim]
+        std::vector<float> q_2d_data(batch_size * num_heads * seq_len * head_dim);
+        std::vector<float> k_2d_data(batch_size * num_heads * seq_len * head_dim);
+        std::vector<float> v_2d_data(batch_size * num_heads * seq_len * head_dim);
+        for (int n = 0; n < batch_size; ++n) {
+            for (int h = 0; h < num_heads; ++h) {
+                for (int p = 0; p < seq_len; ++p) {
+                    for (int d = 0; d < head_dim; ++d) {
+                        int idx = (n * num_heads + h) * seq_len * head_dim + p * head_dim + d;
+                        int src_idx = n * seq_len * num_heads * head_dim + p * num_heads * head_dim + h * head_dim + d;
+                        q_2d_data[idx] = q_cache.data[src_idx];
+                        k_2d_data[idx] = k_cache.data[src_idx];
+                        v_2d_data[idx] = v_cache.data[src_idx];
+                    }
+                }
+            }
+        }
+        Tensor Q_2d(q_2d_data, {batch_size * num_heads, seq_len, head_dim});
+        Tensor K_2d(k_2d_data, {batch_size * num_heads, seq_len, head_dim});
+        Tensor V_2d(v_2d_data, {batch_size * num_heads, seq_len, head_dim});
+
+        // Backward through Q, K, V
+        Tensor grad_Q_2d = grad_attn_2d.matmul(K_2d) / std::sqrt((float)head_dim);
+        Tensor grad_K_2d = grad_attn_2d.transpose().matmul(Q_2d) / std::sqrt((float)head_dim);
+        Tensor grad_V_2d = attn_2d.matmul(grad_out_2d_reshaped);
+
+        // Reshape gradients to [batch_size, seq_len, num_heads, head_dim]
+        std::vector<float> grad_Q_data(batch_size * seq_len * num_heads * head_dim);
+        std::vector<float> grad_K_data(batch_size * seq_len * num_heads * head_dim);
+        std::vector<float> grad_V_data(batch_size * seq_len * num_heads * head_dim);
+        for (int n = 0; n < batch_size; ++n) {
+            for (int h = 0; h < num_heads; ++h) {
+                for (int p = 0; p < seq_len; ++p) {
+                    for (int d = 0; d < head_dim; ++d) {
+                        int idx = n * seq_len * num_heads * head_dim + p * num_heads * head_dim + h * head_dim + d;
+                        int src_idx = (n * num_heads + h) * seq_len * head_dim + p * head_dim + d;
+                        grad_Q_data[idx] = grad_Q_2d.data[src_idx];
+                        grad_K_data[idx] = grad_K_2d.data[src_idx];
+                        grad_V_data[idx] = grad_V_2d.data[src_idx];
+                    }
+                }
+            }
+        }
+        Tensor grad_Q(grad_Q_data, {batch_size, seq_len, num_heads, head_dim});
+        Tensor grad_K(grad_K_data, {batch_size, seq_len, num_heads, head_dim});
+        Tensor grad_V(grad_V_data, {batch_size, seq_len, num_heads, head_dim});
+
+        // Reshape to [batch_size * seq_len, embed_dim]
+        std::vector<float> grad_Q_2d_final(batch_size * seq_len * embed_dim);
+        std::vector<float> grad_K_2d_final(batch_size * seq_len * embed_dim);
+        std::vector<float> grad_V_2d_final(batch_size * seq_len * embed_dim);
+        for (int n = 0; n < batch_size; ++n) {
+            for (int p = 0; p < seq_len; ++p) {
+                for (int h = 0; h < num_heads; ++h) {
+                    for (int d = 0; d < head_dim; ++d) {
+                        int idx = n * seq_len * embed_dim + p * embed_dim + h * head_dim + d;
+                        int src_idx = n * seq_len * num_heads * head_dim + p * num_heads * head_dim + h * head_dim + d;
+                        grad_Q_2d_final[idx] = grad_Q.data[src_idx];
+                        grad_K_2d_final[idx] = grad_K.data[src_idx];
+                        grad_V_2d_final[idx] = grad_V.data[src_idx];
+                    }
+                }
+            }
+        }
+        Tensor grad_Q_final(grad_Q_2d_final, {batch_size * seq_len, embed_dim});
+        Tensor grad_K_final(grad_K_2d_final, {batch_size * seq_len, embed_dim});
+        Tensor grad_V_final(grad_V_2d_final, {batch_size * seq_len, embed_dim});
+
+        // Compute gradients for weights
+        Tensor input_2d(input_cache.data, {batch_size * seq_len, embed_dim});
+        W_q_grad = input_2d.transpose().matmul(grad_Q_final);
+        W_k_grad = input_2d.transpose().matmul(grad_K_final);
+        W_v_grad = input_2d.transpose().matmul(grad_V_final);
+        std::vector<float> bias_q_grad_data(embed_dim, 0.0f);
+        std::vector<float> bias_k_grad_data(embed_dim, 0.0f);
+        std::vector<float> bias_v_grad_data(embed_dim, 0.0f);
+        for (int i = 0; i < batch_size * seq_len; ++i) {
+            for (int d = 0; d < embed_dim; ++d) {
+                bias_q_grad_data[d] += grad_Q_final.data[i * embed_dim + d];
+                bias_k_grad_data[d] += grad_K_final.data[i * embed_dim + d];
+                bias_v_grad_data[d] += grad_V_final.data[i * embed_dim + d];
+            }
+        }
+        bias_q_grad = Tensor(bias_q_grad_data, {embed_dim});
+        bias_k_grad = Tensor(bias_k_grad_data, {embed_dim});
+        bias_v_grad = Tensor(bias_v_grad_data, {embed_dim});
+
+        // Compute input gradient
+        Tensor grad_input_2d = grad_Q_final.matmul(W_q.transpose()) + grad_K_final.matmul(W_k.transpose()) + grad_V_final.matmul(W_v.transpose());
+
+        // Reshape to [batch_size, seq_len, embed_dim]
+        Tensor grad_input(grad_input_2d.data, {batch_size, seq_len, embed_dim});
+        return grad_input;
+    }
+
+    void update_weights(Optimizer* optimizer) override {
+        optimizer->update(W_q, W_q_grad);
+        optimizer->update(W_k, W_k_grad);
+        optimizer->update(W_v, W_v_grad);
+        optimizer->update(W_o, W_o_grad);
+        optimizer->update(bias_q, bias_q_grad);
+        optimizer->update(bias_k, bias_k_grad);
+        optimizer->update(bias_v, bias_v_grad);
+        optimizer->update(bias_o, bias_o_grad);
+    }
+
+    size_t num_params() const override {
+        return W_q.total_elements() + W_k.total_elements() + W_v.total_elements() + W_o.total_elements() +
+               bias_q.total_elements() + bias_k.total_elements() + bias_v.total_elements() + bias_o.total_elements();
+    }
+};
+*/
 
 class MultiHeadSelfAttention : public Layer {
 private:

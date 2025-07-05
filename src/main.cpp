@@ -56,7 +56,15 @@ int main() {
     return 0;
 }
 
-*/
+
+
+
+
+
+
+
+
+
 int main() {
     std::cout << "🔁 Cargando datos...\n";
     MNISTLoader train_data("data/train-images.idx3-ubyte", "data/train-labels.idx1-ubyte", 1000);
@@ -84,6 +92,53 @@ int main() {
     model.add(std::make_shared<Dense>(64, 10));             // 64 -> 10
     model.add(std::make_shared<Softmax>());
 
+
+    std::cout << "⚙️  Configurando modelo...\n";
+    model.add_metric(std::make_shared<Accuracy>());
+    model.compile(
+        std::make_shared<CrossEntropyLoss>(),
+        std::make_shared<Adam>(0.001f),
+        std::make_shared<Logger>()
+    );
+
+    std::cout << "🚀 Entrenando...\n";
+    model.fit(train_data.images, train_data.labels,
+              test_data.images, test_data.labels,
+              10, 32);
+
+    return 0;
+}
+*/
+
+int main() {
+    std::cout << "🔁 Cargando datos...\n";
+    MNISTLoader train_data("data/train-images.idx3-ubyte", "data/train-labels.idx1-ubyte", 1000);
+    MNISTLoader test_data("data/t10k-images.idx3-ubyte", "data/t10k-labels.idx1-ubyte", 1000);
+
+    std::cout << "🧠 Construyendo modelo Vision Transformer...\n";
+    Model model;
+
+    // MNIST imágenes: (N, 1, 28, 28)
+    int image_size = 28;
+    int patch_size = 7;
+    int num_patches = (image_size / patch_size) * (image_size / patch_size); // 16
+    int embed_dim = 64;
+    int num_heads = 4;
+    int ff_dim = 128;
+    float dropout = 0.1f;
+
+    model.add(std::make_shared<PatchEmbedding>(1, patch_size, embed_dim));            // (N, 16, 64)
+    model.add(std::make_shared<PositionalEncoding>(num_patches, embed_dim));          // (N, 16, 64)
+    model.add(std::make_shared<TransformerEncoder>(embed_dim, num_heads, ff_dim, dropout, ActivationType::ReLU));
+   // model.add(std::make_shared<LayerNorm>(embed_dim));
+
+    // Aplanamos para clasificación
+    model.add(std::make_shared<GlobalAveragePooling>());         // (N, 16, 64) -> (N, 64)
+    model.add(std::make_shared<Dense>(embed_dim, 10));          // No necesitas multiplicar por num_patches
+    //model.add(std::make_shared<ReLU>());
+    //model.add(std::make_shared<Dropout>(0.5f));
+    //model.add(std::make_shared<Dense>(128, 10));                // 10 clases
+    model.add(std::make_shared<Softmax>());
 
     std::cout << "⚙️  Configurando modelo...\n";
     model.add_metric(std::make_shared<Accuracy>());

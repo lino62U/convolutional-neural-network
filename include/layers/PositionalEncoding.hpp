@@ -49,7 +49,7 @@ public:
         for (int b = 0; b < B; ++b) {
             for (int p = 0; p < N; ++p) {
                 for (int d = 0; d < D; ++d) {
-                    output.at(b, p, d) = input.at(b, p, d) + encodings.at(p, d);
+                    output.at({b, p, d}) = input.at({b, p, d}) + encodings.at({p, d});
                 }
             }
         }
@@ -67,9 +67,9 @@ public:
             for (int d = 0; d < D; ++d) {
                 float sum = 0.0f;
                 for (int b = 0; b < B; ++b) {
-                    sum += grad_output.at(b, p, d);
+                    sum += grad_output.at({b, p, d});
                 }
-                encodings_grad.at(p, d) = sum;
+                encodings_grad.at({p, d}) = sum;
             }
         }
 

@@ -22,6 +22,14 @@
 #include "layers/MinPooling2D.hpp"
 #include "layers/AveragePooling2D.hpp"
 #include "layers/Dropout.hpp"
+#include "layers/FeedForward.hpp"
+#include "layers/FeedForward2.hpp"
+#include "layers/LayerNorm.hpp"
+#include "layers/MultiHeadSelfAttention.hpp"
+#include "layers/TransformerEncoder.hpp"
+#include "layers/PatchEmbedding.hpp"
+#include "layers/PositionalEncoding.hpp"
+#include "layers/GlobalAveragePooling.hpp"
 
 // Puedes agregar más: Flatten, LSTM, RNN, etc.
 

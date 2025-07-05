@@ -140,6 +140,7 @@ public:
 
             training_mode = true; // Set to training mode
 
+//            std::cout << "\n📦 Época " << epoch + 1 << "/" << epochs << "\n";
             for (int b = 0; b < num_batches; ++b) {
                 // Create batch
                 int start = b * batch_size;
@@ -198,12 +199,12 @@ public:
 
             // Log training results
             if (logger) {
-                std::string log_message = "Epoch " + std::to_string(epoch + 1) + "/" + 
-                                         std::to_string(epochs) + ", Train Loss: " + 
-                                         std::to_string(epoch_loss);
+                std::string log_message = "📊 Epoch " + std::to_string(epoch + 1) + "/" + 
+                                        std::to_string(epochs) + ", Train Loss: " + 
+                                        std::to_string(epoch_loss);
                 for (size_t m = 0; m < metrics.size(); ++m) {
                     log_message += ", Train " + metrics[m]->name() + ": " + 
-                                  std::to_string(epoch_metrics[m]);
+                                std::to_string(epoch_metrics[m]);
                 }
                 logger->log(log_message);
             }

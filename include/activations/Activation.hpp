@@ -3,6 +3,8 @@
 #include "core/Layer.hpp"
 
 // Clase abstracta que representa una función de activación como capa
+
+enum class ActivationType { ReLU, Sigmoid, Softmax , Tanh, None};
 class Activation : public Layer {
 protected:
     Tensor input_cache;
