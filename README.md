@@ -1,187 +1,183 @@
 
-# convolutional-neural-network
+# Comparación de MLP y CNN para Clasificación de Imágenes en Fashion-MNIST
 
-## Overview
+Este proyecto compara el desempeño de dos arquitecturas de redes neuronales —un Perceptrón Multicapa (MLP) y una Red Neuronal Convolucional (CNN)— en la tarea de clasificación de imágenes del conjunto **Fashion‑MNIST**, implementadas desde cero en **C++**.
 
-This repository contains an implementation of a Convolutional Neural Network (CNN) designed for image classification tasks. The code is structured to provide modularity and ease of use, allowing users to experiment with different architectures and configurations.
+## 📚 Descripción
 
-## How to Execute
+El objetivo principal es evaluar cuál arquitectura logra mejores resultados en términos de precisión y pérdida, bajo condiciones de entrenamiento equivalentes. Para ello se desarrollaron, entrenaron y evaluaron ambas redes utilizando una infraestructura personalizada basada en `Tensor`, `Conv2D`, `Dense`, `Flatten`, etc.
 
-To run the project, execute the `run.sh` script located in the root directory. This script automates the setup and execution of the neural network training process. Ensure that the necessary dependencies are installed prior to execution.
 
-### Steps:
-1. Navigate to the project directory:
-    ```bash
-    cd /home/lupo/Documents/topicos_ia/convolutional-neural-network
-    ```
-2. Execute the script:
-    ```bash
-    ./run.sh
-    ```
+---
 
-The script will initialize the training process, load the dataset, and begin training the CNN model.
 
-## Includes
+## Compilación y Ejecución
 
-The project consists of the following key components:
-- **Dataset Loader**: Handles the preprocessing and loading of image datasets.
-- **Model Definitions**: Contains the implementation of CNN and MLP layers.
-- **Training Module**: Manages the training loop, loss calculation, and optimization.
-- **Utilities**: Includes helper functions for logging, visualization, and evaluation.
+El proyecto utiliza CMake para la compilación y un script `run.sh` que facilita las tareas comunes:
 
-## Example Code
+### Otorgar permisos al script (solo la primera vez):
 
-### Multi-Layer Perceptron (MLP) Layer
-```cpp
-#include <vector>
-#include <cmath>
+```bash
+chmod +x run.sh
+````
 
-class MLP {
-public:
-     MLP(int input_size, int hidden_size, int output_size) {
-          // Initialize weights and biases
-          weights_input_hidden.resize(input_size * hidden_size);
-          weights_hidden_output.resize(hidden_size * output_size);
-          biases_hidden.resize(hidden_size);
-          biases_output.resize(output_size);
-     }
+### Comandos disponibles en el script
 
-     std::vector<float> forward(const std::vector<float>& input) {
-          // Compute hidden layer activations
-          std::vector<float> hidden(hidden_size);
-          for (int i = 0; i < hidden_size; ++i) {
-                hidden[i] = biases_hidden[i];
-                for (int j = 0; j < input_size; ++j) {
-                     hidden[i] += input[j] * weights_input_hidden[j * hidden_size + i];
-                }
-                hidden[i] = std::tanh(hidden[i]); // Activation function
-          }
-
-          // Compute output layer activations
-          std::vector<float> output(output_size);
-          for (int i = 0; i < output_size; ++i) {
-                output[i] = biases_output[i];
-                for (int j = 0; j < hidden_size; ++j) {
-                     output[i] += hidden[j] * weights_hidden_output[j * output_size + i];
-                }
-          }
-          return output;
-     }
-
-private:
-     int input_size, hidden_size, output_size;
-     std::vector<float> weights_input_hidden, weights_hidden_output;
-     std::vector<float> biases_hidden, biases_output;
-};
+```bash
+./run.sh build    # Construye el proyecto con CMake y Make
+./run.sh test     # Ejecuta las pruebas unitarias
+./run.sh main     # Ejecuta el programa principal 
 ```
 
-### Convolutional Neural Network (CNN) Layer
-```cpp
-#include <vector>
-#include <cmath>
+El script crea un directorio `build/`, genera los archivos de construcción con CMake y compila usando todos los núcleos disponibles.
 
-class ConvLayer {
-public:
-     ConvLayer(int num_filters, int filter_size, int input_size) {
-          this->num_filters = num_filters;
-          this->filter_size = filter_size;
-          this->input_size = input_size;
 
-          // Initialize filters
-          filters.resize(num_filters, std::vector<std::vector<float>>(filter_size, std::vector<float>(filter_size)));
-     }
 
-     std::vector<std::vector<float>> forward(const std::vector<std::vector<float>>& input) {
-          std::vector<std::vector<float>> output(input_size - filter_size + 1, std::vector<float>(input_size - filter_size + 1));
 
-          for (int f = 0; f < num_filters; ++f) {
-                for (int i = 0; i < input_size - filter_size + 1; ++i) {
-                     for (int j = 0; j < input_size - filter_size + 1; ++j) {
-                          float sum = 0.0f;
-                          for (int k = 0; k < filter_size; ++k) {
-                                for (int l = 0; l < filter_size; ++l) {
-                                     sum += input[i + k][j + l] * filters[f][k][l];
-                                }
-                          }
-                          output[i][j] = sum;
-                     }
-                }
-          }
-          return output;
-     }
+## 🧠 Modelos Implementados
 
-private:
-     int num_filters, filter_size, input_size;
-     std::vector<std::vector<std::vector<float>>> filters;
-};
+### 🔹 MLP (Multilayer Perceptron)
+- 2 capas ocultas densas: 64 y 32 neuronas.
+- Función de activación: ReLU.
+- Regularización: Dropout.
+- Salida: Softmax con 10 clases.
+
+### 🔹 CNN (Convolutional Neural Network)
+- 2 bloques convolucionales con filtros $3\times3$ y padding conservador.
+- MaxPooling $2\times2$ tras cada bloque.
+- Aplanamiento (Flatten).
+- 2 capas densas finales, incluida la capa de salida softmax.
+
+## 🧪 Dataset
+
+Se utilizó el conjunto [Fashion-MNIST](https://github.com/zalandoresearch/fashion-mnist):
+- 60,000 imágenes para entrenamiento.
+- 10,000 imágenes para prueba.
+- Imágenes de $28\times28$ píxeles en escala de grises (convertidas a 3 canales RGB para compatibilidad).
+
+## ⚙️ Entrenamiento
+
+- Optimizador: **Stochastic Gradient Descent (SGD)**
+- Learning rate: `0.002`
+- Épocas: `20`
+- Batch size: `32`
+- Función de pérdida: Entropía cruzada categórica
+
+## 📈 Resultados
+
+Durante el entrenamiento se registraron métricas por época (pérdida y precisión en entrenamiento y validación). La siguiente tabla resume el **desempeño final en el conjunto de prueba**:
+
+| Modelo | Precisión en test | Pérdida en test |
+|--------|-------------------|-----------------|
+| CNN    | 0.8675            | 0.3505          |
+| MLP    | 0.8600            | 0.4134          |
+
+> La CNN superó ligeramente al MLP en todos los aspectos, confirmando su eficacia para extraer características espaciales en imágenes.
+
+## 🖼️ Visualizaciones
+### 🔹 Capturas de consola del entrenamiento
+
+CNN:
+![Consola CNN](examples/cnn2.png)
+
+MLP:
+![Consola MLP](examples/mlp.png)
+
+### 🔹 Curvas de entrenamiento
+
+**Evolución de la pérdida (`loss`)**
+![Pérdida](examples/loss_comparison.png)
+
+**Evolución de la precisión (`accuracy`)**
+![Precisión](examples/accuracy_comparison.png)
+
+
+## 📁 Estructura del Código
+
+El código fuente está disponible en el apéndice del informe y se encuentra estructurado en módulos como:
+
+```
+├── CMakeLists.txt
+├── data
+│   ├── fashionmnist
+│   │   ├── t10k-images-idx3-ubyte
+│   │   ├── t10k-labels-idx1-ubyte
+│   │   ├── train-images-idx3-ubyte
+│   │   └── train-labels-idx1-ubyte
+│   ├── mnist45
+│   ├── t10k-images.idx3-ubyte
+│   ├── t10k-labels.idx1-ubyte
+│   ├── train-images.idx3-ubyte
+│   └── train-labels.idx1-ubyte
+├── examples
+│   ├── accuracy_comparison.png
+│   ├── cnn2.png
+│   ├── cnn.cpp
+│   ├── loss_comparison.png
+│   ├── mainas.cpp
+│   ├── main.py
+│   ├── mlp.png
+│   ├── mnist_cnn.cpp
+│   └── sequence_rnn.cpp
+├── include
+│   ├── activations
+│   │   ├── Activation.hpp
+│   │   ├── ReLU.hpp
+│   │   ├── Sigmoid.hpp
+│   │   ├── Softmax.hpp
+│   │   └── Tanh.hpp
+│   ├── core
+│   │   ├── Initializer.hpp
+│   │   ├── Layer.hpp
+│   │   ├── Loss.hpp
+│   │   ├── Model.hpp
+│   │   └── Tensor.hpp
+│   ├── layers
+│   │   ├── AveragePooling2D.hpp
+│   │   ├── Conv2D.hpp
+│   │   ├── Dropout.hpp
+│   │   ├── Flatten.hpp
+│   │   ├── Linear.hpp
+│   │   ├── MaxPooling2D.hpp
+│   │   ├── MinPooling2D.hpp
+│   │   └── RNN.hpp
+│   ├── metrics
+│   │   └── Metric.hpp
+│   ├── models
+│   │   └── models.hpp
+│   ├── NeuralNet.hpp
+│   ├── optimizers
+│   │   ├── Adam.hpp
+│   │   ├── Optimizer.hpp
+│   │   ├── RMSProp.hpp
+│   │   └── SGD.hpp
+│   └── utils
+│       ├── DatasetLoader.hpp
+│       ├── DataUtils.hpp
+│       └── Logger.hpp
+├── README.md
+├── run.sh
+├── src
+│   └── main.cpp
+├── training_log_cnn.csv
+└── training_log_mlp.csv
+
 ```
 
-## Notes
+## 🧩 Dependencias
 
-- Ensure that the dataset is properly formatted and placed in the expected directory before running the script.
-- Modify the configuration files to experiment with different architectures and hyperparameters.
-## Layer Creation Example
+Este proyecto está escrito en **C++17**, y no requiere frameworks externos como TensorFlow o PyTorch.
 
-The following examples demonstrate how to create layers for a dense network (MLP) and a Convolutional Neural Network (CNN) using the `src/main` file.
+## ✅ Conclusiones
 
-### Dense Network (MLP) Layer Creation
-```cpp
-#include "MLP.h"
+La CNN ofrece mejor rendimiento que el MLP bajo el mismo esquema de entrenamiento. Para futuros trabajos se recomienda:
+- Incorporar técnicas como **Batch Normalization**.
+- Utilizar arquitecturas más profundas (e.g., ResNet).
+- Aplicar técnicas de data augmentation.
 
-int main() {
-    // Define layer sizes
-    int input_size = 128;
-    int hidden_size = 64;
-    int output_size = 10;
+## 📄 Licencia
 
-    // Create an MLP layer
-    MLP dense_layer(input_size, hidden_size, output_size);
+Este proyecto se publica con fines educativos y académicos. Puedes reutilizar el código citando al autor original.
 
-    // Example input
-    std::vector<float> input(input_size, 1.0f);
+---
 
-    // Forward pass
-    std::vector<float> output = dense_layer.forward(input);
-
-    // Print output
-    for (float value : output) {
-        std::cout << value << " ";
-    }
-    std::cout << std::endl;
-
-    return 0;
-}
-```
-
-### Convolutional Neural Network (CNN) Layer Creation
-```cpp
-#include "ConvLayer.h"
-
-int main() {
-    // Define layer parameters
-    int num_filters = 3;
-    int filter_size = 3;
-    int input_size = 5;
-
-    // Create a convolutional layer
-    ConvLayer conv_layer(num_filters, filter_size, input_size);
-
-    // Example input
-    std::vector<std::vector<float>> input(input_size, std::vector<float>(input_size, 1.0f));
-
-    // Forward pass
-    std::vector<std::vector<float>> output = conv_layer.forward(input);
-
-    // Print output
-    for (const auto& row : output) {
-        for (float value : row) {
-            std::cout << value << " ";
-        }
-        std::cout << std::endl;
-    }
-
-    return 0;
-}
-```
-
-These examples illustrate how to instantiate and use the layers defined in the `src/main` file for building neural network architectures.
