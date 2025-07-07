@@ -1,25 +1,23 @@
-// include/activations/Sigmoid.hpp
 #pragma once
 
-#include "Activation.hpp"
+#include "activations/Activation.hpp"
 #include <cmath>
 
 class Sigmoid : public Activation {
 public:
     Tensor activate(const Tensor& x) override {
-        Tensor out(x.shape);
-        for (int i = 0; i < x.size(); ++i) {
-            out[i] = 1.0f / (1.0f + std::exp(-x[i]));
-        }
-        return out;
+        std::vector<float> out(x.data.size());
+        for (size_t i = 0; i < x.data.size(); ++i)
+            out[i] = 1.0f / (1.0f + std::exp(-x.data[i]));
+        return Tensor(out, x.shape);
     }
 
     Tensor derivative(const Tensor& x) override {
-        Tensor sig = activate(x);  // reuse activate
-        Tensor grad(x.shape);
-        for (int i = 0; i < x.size(); ++i) {
-            grad[i] = sig[i] * (1.0f - sig[i]);
+        std::vector<float> grad(x.data.size());
+        for (size_t i = 0; i < x.data.size(); ++i) {
+            float s = 1.0f / (1.0f + std::exp(-x.data[i]));
+            grad[i] = s * (1.0f - s);
         }
-        return grad;
+        return Tensor(grad, x.shape);
     }
 };

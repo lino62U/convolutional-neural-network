@@ -4,8 +4,9 @@
 #include "core/Tensor.hpp"
 
 
+// Optimizer base class
 class Optimizer {
 public:
-    virtual void update(Tensor& weights, const Tensor& grads) = 0;
+    virtual void update(Tensor& param, const Tensor& grad) = 0;
     virtual ~Optimizer() {}
 };

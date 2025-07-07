@@ -6,137 +6,179 @@
 #include <stdexcept>
 #include <algorithm>
 #include <string>
+#include <activations/Activation.hpp>
+#include <random>
+#include <omp.h>
+
+enum class PaddingType { VALID, SAME, CUSTOM };
 
 class Conv2D : public Layer {
 private:
-    int in_channels, out_channels;
-    int kernel_h, kernel_w;
-    int stride;
-    std::string padding_type;
+    Tensor filters, bias;
+    Tensor filters_grad, bias_grad;
 
-    Tensor filters;
-    Tensor bias;
+    PaddingType padding_type;
+    int custom_pad = 0;
+    int stride = 1;
+    int computed_padding = 0;
+
+    std::shared_ptr<Activation> activation;
+
     Tensor input_cache;
-    Tensor grad_filters;
-    Tensor grad_bias;
+    Tensor z_cache;
+    Tensor a_cache;
+
+    std::mt19937 rng;
+
+    void initialize_filters(int in_channels, int num_filters, int kernel_size) {
+        std::normal_distribution<float> dist(0.0f, std::sqrt(2.0f / (in_channels * kernel_size * kernel_size)));
+        std::vector<float> f_data(num_filters * in_channels * kernel_size * kernel_size);
+        for (auto& f : f_data) f = dist(rng);
+        filters = Tensor(std::move(f_data), {num_filters, in_channels, kernel_size, kernel_size});
+        bias = Tensor(std::vector<float>(num_filters, 0.0f), {num_filters});
+    }
 
 public:
-    Conv2D(int in_ch, int out_ch, int k_h, int k_w, int stride_ = 1, const std::string& padding = "valid")
-        : in_channels(in_ch), out_channels(out_ch),
-          kernel_h(k_h), kernel_w(k_w),
-          stride(stride_), padding_type(padding) {
-
-        filters = Tensor({out_ch, in_ch, k_h, k_w});
-        filters.fill(1.0f);  // Inicialización simple para test
-        bias = Tensor({out_ch});
-        bias.fill(0.0f);
-        grad_filters = Tensor({out_ch, in_ch, k_h, k_w});
-        grad_bias = Tensor({out_ch});
+    Conv2D(int in_channels, int num_filters, int kernel_size,
+           PaddingType pad_type = PaddingType::VALID, int stride_ = 1,
+           std::shared_ptr<Activation> act = nullptr)
+        : padding_type(pad_type), stride(stride_), activation(std::move(act)), rng(std::random_device{}()) {
+        initialize_filters(in_channels, num_filters, kernel_size);
     }
 
-    size_t num_params() const override {
-        return filters.size() + bias.size();
+    void set_custom_padding(int pad) {
+        padding_type = PaddingType::CUSTOM;
+        custom_pad = pad;
     }
 
-    Tensor forward(const Tensor& input) override {
-        input_cache = input;
-        int batch = input.shape[0];
-        int in_h = input.shape[2], in_w = input.shape[3];
+    Tensor forward(const Tensor& input, bool training = false) override {
+        const int N = input.shape[0];
+        const int C = input.shape[1];
+        const int H = input.shape[2];
+        const int W = input.shape[3];
+        const int K = filters.shape[2];
+        const int Kw = filters.shape[3];
+        const int F = filters.shape[0];
 
-        int pad_h = 0, pad_w = 0;
-        if (padding_type == "same") {
-            pad_h = std::max((out_size(in_h, kernel_h, stride, "same") - 1) * stride + kernel_h - in_h, 0) / 2;
-            pad_w = std::max((out_size(in_w, kernel_w, stride, "same") - 1) * stride + kernel_w - in_w, 0) / 2;
-        }
+        int pad = 0;
+        if (padding_type == PaddingType::SAME)
+            pad = ((H - 1) * stride + K - H) / 2;
+        else if (padding_type == PaddingType::CUSTOM)
+            pad = custom_pad;
+        computed_padding = pad;
 
-        int out_h = (in_h + 2 * pad_h - kernel_h) / stride + 1;
-        int out_w = (in_w + 2 * pad_w - kernel_w) / stride + 1;
+        input_cache = input.pad(pad);
 
-        Tensor output({batch, out_channels, out_h, out_w});
-        output.fill(0.0f);
+        const int Hp = input_cache.shape[2];
+        const int Wp = input_cache.shape[3];
+        const int Oh = (Hp - K) / stride + 1;
+        const int Ow = (Wp - Kw) / stride + 1;
 
-        for (int b = 0; b < batch; ++b) {
-            for (int oc = 0; oc < out_channels; ++oc) {
-                for (int oh = 0; oh < out_h; ++oh) {
-                    for (int ow = 0; ow < out_w; ++ow) {
-                        float sum = bias.at({oc});
-                        for (int ic = 0; ic < in_channels; ++ic) {
-                            for (int kh = 0; kh < kernel_h; ++kh) {
-                                for (int kw = 0; kw < kernel_w; ++kw) {
-                                    int ih = oh * stride + kh - pad_h;
-                                    int iw = ow * stride + kw - pad_w;
-                                    if (ih >= 0 && ih < in_h && iw >= 0 && iw < in_w) {
-                                        sum += input.at({b, ic, ih, iw}) *
-                                               filters.at({oc, ic, kh, kw});
-                                    }
+        z_cache = Tensor({N, F, Oh, Ow});
+        float* z_data = z_cache.data.data();
+        const float* in_data = input_cache.data.data();
+        const float* f_data = filters.data.data();
+        const float* b_data = bias.data.data();
+
+        #pragma omp parallel for collapse(4)
+        for (int n = 0; n < N; ++n)
+            for (int f = 0; f < F; ++f)
+                for (int h = 0; h < Oh; ++h)
+                    for (int w = 0; w < Ow; ++w) {
+                        float sum = b_data[f];
+                        for (int c = 0; c < C; ++c)
+                            for (int kh = 0; kh < K; ++kh)
+                                for (int kw = 0; kw < Kw; ++kw) {
+                                    int ih = h * stride + kh;
+                                    int iw = w * stride + kw;
+                                    int in_idx = ((n * C + c) * Hp + ih) * Wp + iw;
+                                    int filt_idx = ((f * C + c) * K + kh) * Kw + kw;
+                                    sum += in_data[in_idx] * f_data[filt_idx];
                                 }
-                            }
-                        }
-                        output.at({b, oc, oh, ow}) = sum;
+                        int out_idx = ((n * F + f) * Oh + h) * Ow + w;
+                        z_data[out_idx] = sum;
                     }
-                }
-            }
-        }
 
-        return output;
+        if (activation) {
+            a_cache = activation->forward(z_cache, training);
+            return a_cache;
+        }
+        return z_cache;
     }
 
     Tensor backward(const Tensor& grad_output) override {
-        const Tensor& input = input_cache;
-        int batch = input.shape[0];
-        int in_h = input.shape[2], in_w = input.shape[3];
-        int out_h = grad_output.shape[2], out_w = grad_output.shape[3];
+        const Tensor& grad_z = activation ? activation->backward(grad_output) : grad_output;
 
-        int pad_h = 0, pad_w = 0;
-        if (padding_type == "same") {
-            pad_h = std::max((out_size(in_h, kernel_h, stride, "same") - 1) * stride + kernel_h - in_h, 0) / 2;
-            pad_w = std::max((out_size(in_w, kernel_w, stride, "same") - 1) * stride + kernel_w - in_w, 0) / 2;
-        }
+        const int N = input_cache.shape[0];
+        const int C = input_cache.shape[1];
+        const int Hp = input_cache.shape[2];
+        const int Wp = input_cache.shape[3];
+        const int F = filters.shape[0];
+        const int K = filters.shape[2];
+        const int Kw = filters.shape[3];
+        const int Oh = grad_z.shape[2];
+        const int Ow = grad_z.shape[3];
 
-        Tensor grad_input(input.shape);
+        filters_grad = Tensor::zeros(filters.shape);
+        bias_grad = Tensor::zeros(bias.shape);
+        Tensor grad_input(input_cache.shape);
         grad_input.fill(0.0f);
-        grad_filters.fill(0.0f);
-        grad_bias.fill(0.0f);
 
-        for (int b = 0; b < batch; ++b) {
-            for (int oc = 0; oc < out_channels; ++oc) {
-                for (int oh = 0; oh < out_h; ++oh) {
-                    for (int ow = 0; ow < out_w; ++ow) {
-                        float grad_val = grad_output.at({b, oc, oh, ow});
-                        grad_bias.at({oc}) += grad_val;
+        float* grad_in_data = grad_input.data.data();
+        const float* gradz_data = grad_z.data.data();
+        const float* in_data = input_cache.data.data();
+        float* filt_grad_data = filters_grad.data.data();
+        float* bias_grad_data = bias_grad.data.data();
+        const float* filt_data = filters.data.data();
 
-                        for (int ic = 0; ic < in_channels; ++ic) {
-                            for (int kh = 0; kh < kernel_h; ++kh) {
-                                for (int kw = 0; kw < kernel_w; ++kw) {
-                                    int ih = oh * stride + kh - pad_h;
-                                    int iw = ow * stride + kw - pad_w;
-                                    if (ih >= 0 && ih < in_h && iw >= 0 && iw < in_w) {
-                                        grad_input.at({b, ic, ih, iw}) += filters.at({oc, ic, kh, kw}) * grad_val;
-                                        grad_filters.at({oc, ic, kh, kw}) += input.at({b, ic, ih, iw}) * grad_val;
-                                    }
+        #pragma omp parallel for collapse(4)
+        for (int n = 0; n < N; ++n)
+            for (int f = 0; f < F; ++f)
+                for (int h = 0; h < Oh; ++h)
+                    for (int w = 0; w < Ow; ++w) {
+                        float d_out = gradz_data[((n * F + f) * Oh + h) * Ow + w];
+
+                        #pragma omp atomic
+                        bias_grad_data[f] += d_out;
+
+                        for (int c = 0; c < C; ++c)
+                            for (int kh = 0; kh < K; ++kh)
+                                for (int kw = 0; kw < Kw; ++kw) {
+                                    int ih = h * stride + kh;
+                                    int iw = w * stride + kw;
+                                    int in_idx = ((n * C + c) * Hp + ih) * Wp + iw;
+                                    int filt_idx = ((f * C + c) * K + kh) * Kw + kw;
+
+                                    float in_val = in_data[in_idx];
+                                    float filt_val = filt_data[filt_idx];
+
+                                    #pragma omp atomic
+                                    filt_grad_data[filt_idx] += in_val * d_out;
+
+                                    #pragma omp atomic
+                                    grad_in_data[in_idx] += filt_val * d_out;
                                 }
-                            }
-                        }
                     }
-                }
-            }
-        }
 
-        return grad_input;
+        return grad_input.unpad(computed_padding);
+    }
+
+    void clear_cache() override {
+        input_cache.clear();
+        z_cache.clear();
+        a_cache.clear();
+        filters_grad.clear();
+        bias_grad.clear();
     }
 
     void update_weights(Optimizer* optimizer) override {
-        optimizer->update(filters, grad_filters);
-        optimizer->update(bias, grad_bias);
+        optimizer->update(filters, filters_grad);
+        optimizer->update(bias, bias_grad);
+        filters_grad.clear();
+        bias_grad.clear();
     }
 
-    Tensor& get_filters() { return filters; }
-    Tensor& get_bias() { return bias; }
-    Tensor& get_grad_bias() { return grad_bias; }
-
-private:
-    int out_size(int in_size, int kernel, int stride, const std::string& pad) const {
-        if (pad == "same") return (in_size + stride - 1) / stride;
-        return (in_size - kernel) / stride + 1;
+    size_t num_params() const override {
+        return filters.total_elements() + bias.total_elements();
     }
 };

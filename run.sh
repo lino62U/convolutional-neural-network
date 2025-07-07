@@ -1,6 +1,7 @@
 #!/bin/bash
 
 set -e  # Salir si hay error
+export OMP_NUM_THREADS=12   # 👈 Fuerza OpenMP a usar 12 hilos
 
 BUILD_DIR="build"
 MAIN_EXEC="neuralnet"
@@ -34,7 +35,7 @@ ensure_build_dir() {
 # Configurar con CMake
 configure_project() {
     echo "📁 Configurando el proyecto con CMake..."
-    cmake -S . -B "$BUILD_DIR"
+    cmake -S . -B "$BUILD_DIR" -DCMAKE_CXX_FLAGS="-fopenmp -O3"
 }
 
 # Compilar el proyecto completo

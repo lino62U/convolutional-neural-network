@@ -5,87 +5,72 @@
 #include <cmath>
 #include <stdexcept>
 
+
+// Loss base class
 class Loss {
 public:
-    virtual float compute(const Tensor& y_true, const Tensor& y_pred) = 0;
-    virtual Tensor gradient(const Tensor& y_true, const Tensor& y_pred) = 0;
+    virtual float compute(const Tensor& y_pred, const Tensor& y_true) = 0;
+    virtual Tensor gradient(const Tensor& y_pred, const Tensor& y_true) = 0;
     virtual ~Loss() {}
 };
 
-class CrossEntropyLoss : public Loss {
+// Mean Squared Error loss
+class MSELoss : public Loss {
 public:
-    float compute(const Tensor& y_true, const Tensor& y_pred) override {
-        if (y_true.shape != y_pred.shape)
-            throw std::invalid_argument("Shapes must match");
-            
-        float loss = 0.0f;
-        const float epsilon = 1e-7f;  // Para estabilidad numérica
-        
-        for (size_t i = 0; i < y_pred.size(); ++i) {
-            // Clip para evitar log(0)
-            float p = std::clamp(y_pred[i], epsilon, 1.0f - epsilon);
-            loss += -y_true[i] * std::log(p);
+    float compute(const Tensor& y_pred, const Tensor& y_true) override {
+        if (y_pred.shape != y_true.shape) {
+            throw std::runtime_error("Shape mismatch in loss computation");
         }
-        return loss / static_cast<float>(y_pred.shape[0]);  // Promedio por batch
+        float sum = 0.0f;
+        for (size_t i = 0; i < y_pred.data.size(); ++i) {
+            float diff = y_pred.data[i] - y_true.data[i];
+            sum += diff * diff;
+        }
+        return sum / y_pred.data.size();
     }
 
-    Tensor gradient(const Tensor& y_true, const Tensor& y_pred) override {
-        // Gradiente combinado Softmax + CrossEntropy
-        Tensor grad(y_pred.shape);
-        for (size_t i = 0; i < y_pred.size(); ++i) {
-            grad[i] = y_pred[i] - y_true[i];
+    Tensor gradient(const Tensor& y_pred, const Tensor& y_true) override {
+        if (y_pred.shape != y_true.shape) {
+            throw std::runtime_error("Shape mismatch in loss gradient");
         }
-        return grad;
+        std::vector<float> grad_data(y_pred.data.size());
+        for (size_t i = 0; i < y_pred.data.size(); ++i) {
+            grad_data[i] = 2.0f * (y_pred.data[i] - y_true.data[i]) / y_pred.data.size();
+        }
+        return Tensor(grad_data, y_pred.shape);
     }
 };
 
-class CrossEntropyWithLogits : public Loss {
+// Categorical Cross-Entropy loss (assumes softmax output)
+class CrossEntropyLoss : public Loss {
 public:
-    float compute(const Tensor& y_true, const Tensor& logits) override {
+    float compute(const Tensor& y_pred, const Tensor& y_true) override {
+        if (y_pred.shape != y_true.shape) {
+            throw std::runtime_error("Shape mismatch in loss computation");
+        }
         float loss = 0.0f;
-        int batch = y_true.shape[0];
-        int classes = y_true.shape[1];
+        int batch_size = y_pred.shape[0];
+        int num_classes = y_pred.shape[1];
 
-        for (int i = 0; i < batch; ++i) {
-            float max_logit = -1e9;
-            for (int j = 0; j < classes; ++j) {
-                max_logit = std::max(max_logit, logits[i * classes + j]);
-            }
-            float sum_exp = 0.0f;
-            for (int j = 0; j < classes; ++j) {
-                sum_exp += std::exp(logits[i * classes + j] - max_logit);
-            }
-            for (int j = 0; j < classes; ++j) {
-                if (y_true[i * classes + j] > 0.0f) {
-                    float log_softmax = logits[i * classes + j] - max_logit - std::log(sum_exp + 1e-9);
-                    loss -= log_softmax;
-                }
+        for (int i = 0; i < batch_size; ++i) {
+            for (int j = 0; j < num_classes; ++j) {
+                int idx = i * num_classes + j;
+                // Add small epsilon to avoid log(0)
+                loss -= y_true.data[idx] * std::log(y_pred.data[idx] + 1e-10f);
             }
         }
-
-        return loss / batch;
+        return loss / batch_size;
     }
 
-    Tensor gradient(const Tensor& y_true, const Tensor& logits) override {
-        int batch = y_true.shape[0];
-        int classes = y_true.shape[1];
-        Tensor grad(logits.shape);
-
-        for (int i = 0; i < batch; ++i) {
-            float max_logit = -1e9;
-            for (int j = 0; j < classes; ++j)
-                max_logit = std::max(max_logit, logits[i * classes + j]);
-
-            float sum_exp = 0.0f;
-            for (int j = 0; j < classes; ++j)
-                sum_exp += std::exp(logits[i * classes + j] - max_logit);
-
-            for (int j = 0; j < classes; ++j) {
-                float softmax = std::exp(logits[i * classes + j] - max_logit) / (sum_exp + 1e-9);
-                grad[i * classes + j] = (softmax - y_true[i * classes + j]) / batch;
-            }
+    Tensor gradient(const Tensor& y_pred, const Tensor& y_true) override {
+        if (y_pred.shape != y_true.shape) {
+            throw std::runtime_error("Shape mismatch in loss gradient");
         }
-
-        return grad;
+        // For softmax + cross-entropy, gradient is simply y_pred - y_true
+        std::vector<float> grad_data(y_pred.data.size());
+        for (size_t i = 0; i < y_pred.data.size(); ++i) {
+            grad_data[i] = y_pred.data[i] - y_true.data[i];
+        }
+        return Tensor(grad_data, y_pred.shape);
     }
 };

@@ -18,100 +18,100 @@ public:
         : pool_h(pool_height), pool_w(pool_width),
           stride(stride_), padding_type(padding) {}
 
-    Tensor forward(const Tensor& input) override {
-        input_shape = input.shape;
-        if (input.shape.size() != 4)
-            throw std::invalid_argument("AveragePooling2D expects input shape [B, C, H, W]");
-
-        int B = input.shape[0], C = input.shape[1];
-        int H = input.shape[2], W = input.shape[3];
-
-        // Calcular padding
-        if (padding_type == "same") {
-            int out_h = static_cast<int>(std::ceil(float(H) / stride));
-            int out_w = static_cast<int>(std::ceil(float(W) / stride));
-            int pad_total_h = std::max(0, (out_h - 1) * stride + pool_h - H);
-            int pad_total_w = std::max(0, (out_w - 1) * stride + pool_w - W);
-            pad_h = pad_total_h / 2;
-            pad_w = pad_total_w / 2;
-        } else if (padding_type == "valid") {
-            pad_h = 0;
-            pad_w = 0;
-        } else {
-            throw std::invalid_argument("Unknown padding type: " + padding_type);
+    Tensor forward(const Tensor& input, bool training = false) override {
+        if (input.shape.size() != 4) {
+            throw std::runtime_error("AveragePooling2D solo soporta tensores 4D");
         }
 
-        int H_pad = H + 2 * pad_h;
-        int W_pad = W + 2 * pad_w;
+        int batch = input.shape[0];
+        int channels = input.shape[1];
+        int height = input.shape[2];
+        int width = input.shape[3];
 
-        int out_h = (H_pad - pool_h) / stride + 1;
-        int out_w = (W_pad - pool_w) / stride + 1;
+        int out_h = (height - pool_h) / stride + 1;
+        int out_w = (width - pool_w) / stride + 1;
 
-        Tensor padded({B, C, H_pad, W_pad});
-        padded.fill(0.0f);
+        if (out_h <= 0 || out_w <= 0) {
+            throw std::runtime_error("Dimensiones de salida inválidas en AveragePooling2D");
+        }
 
-        // Copiar input con padding
-        for (int b = 0; b < B; ++b)
-            for (int c = 0; c < C; ++c)
-                for (int h = 0; h < H; ++h)
-                    for (int w = 0; w < W; ++w)
-                        padded.at({b, c, h + pad_h, w + pad_w}) = input.at({b, c, h, w});
+        std::vector<float> output_data(batch * channels * out_h * out_w, 0.0f);
 
-        Tensor output({B, C, out_h, out_w});
-        float pool_size = static_cast<float>(pool_h * pool_w);
-
-        for (int b = 0; b < B; ++b)
-            for (int c = 0; c < C; ++c)
-                for (int i = 0; i < out_h; ++i)
+        for (int n = 0; n < batch; ++n) {
+            for (int c = 0; c < channels; ++c) {
+                for (int i = 0; i < out_h; ++i) {
                     for (int j = 0; j < out_w; ++j) {
                         float sum = 0.0f;
-                        for (int m = 0; m < pool_h; ++m)
-                            for (int n = 0; n < pool_w; ++n) {
-                                int y = i * stride + m;
-                                int x = j * stride + n;
-                                sum += padded.at({b, c, y, x});
+                        for (int ki = 0; ki < pool_h; ++ki) {
+                            for (int kj = 0; kj < pool_w; ++kj) {
+                                int in_i = i * stride + ki;
+                                int in_j = j * stride + kj;
+                                if (in_i < height && in_j < width) {
+                                    int idx = n * channels * height * width +
+                                            c * height * width +
+                                            in_i * width + in_j;
+                                    sum += input.data[idx];
+                                }
                             }
-                        output.at({b, c, i, j}) = sum / pool_size;
+                        }
+                        float avg = sum / (pool_h * pool_w);
+                        int out_idx = n * channels * out_h * out_w +
+                                    c * out_h * out_w +
+                                    i * out_w + j;
+                        output_data[out_idx] = avg;
                     }
+                }
+            }
+        }
 
-        return output;
+        return Tensor(output_data, {batch, channels, out_h, out_w});
     }
 
     Tensor backward(const Tensor& grad_output) override {
-        int B = input_shape[0], C = input_shape[1];
-        int H = input_shape[2], W = input_shape[3];
-        int H_pad = H + 2 * pad_h;
-        int W_pad = W + 2 * pad_w;
+        if (grad_output.shape.size() != 4) {
+            throw std::runtime_error("grad_output debe tener 4 dimensiones");
+        }
+
+        int batch = input_shape[0];
+        int channels = input_shape[1];
+        int height = input_shape[2];
+        int width = input_shape[3];
+
         int out_h = grad_output.shape[2];
         int out_w = grad_output.shape[3];
 
-        Tensor grad_padded({B, C, H_pad, W_pad});
-        grad_padded.fill(0.0f);
-        float pool_size = static_cast<float>(pool_h * pool_w);
+        std::vector<float> grad_input_data(batch * channels * height * width, 0.0f);
 
-        for (int b = 0; b < B; ++b)
-            for (int c = 0; c < C; ++c)
-                for (int i = 0; i < out_h; ++i)
+        for (int n = 0; n < batch; ++n) {
+            for (int c = 0; c < channels; ++c) {
+                for (int i = 0; i < out_h; ++i) {
                     for (int j = 0; j < out_w; ++j) {
-                        float grad = grad_output.at({b, c, i, j}) / pool_size;
-                        for (int m = 0; m < pool_h; ++m)
-                            for (int n = 0; n < pool_w; ++n) {
-                                int y = i * stride + m;
-                                int x = j * stride + n;
-                                grad_padded.at({b, c, y, x}) += grad;
+                        float grad = grad_output.data[n * channels * out_h * out_w +
+                                                    c * out_h * out_w +
+                                                    i * out_w + j];
+                        float avg_grad = grad / (pool_h * pool_w);
+
+                        for (int ki = 0; ki < pool_h; ++ki) {
+                            for (int kj = 0; kj < pool_w; ++kj) {
+                                int in_i = i * stride + ki;
+                                int in_j = j * stride + kj;
+                                if (in_i < height && in_j < width) {
+                                    int idx = n * channels * height * width +
+                                            c * height * width +
+                                            in_i * width + in_j;
+                                    grad_input_data[idx] += avg_grad;
+                                }
                             }
+                        }
                     }
+                }
+            }
+        }
 
-        // Quitar padding
-        Tensor grad_input({B, C, H, W});
-        for (int b = 0; b < B; ++b)
-            for (int c = 0; c < C; ++c)
-                for (int h = 0; h < H; ++h)
-                    for (int w = 0; w < W; ++w)
-                        grad_input.at({b, c, h, w}) = grad_padded.at({b, c, h + pad_h, w + pad_w});
-
-        return grad_input;
+        return Tensor(grad_input_data, input_shape);
     }
+
+
 
     size_t num_params() const override { return 0; }
 

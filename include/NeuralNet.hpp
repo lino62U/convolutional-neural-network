@@ -14,12 +14,14 @@
 #include "activations/Softmax.hpp"
 
 // Layers
-#include "layers/Dense.hpp"
+#include "layers/Linear.hpp"
 #include "layers/Conv2D.hpp"
 #include "layers/Flatten.hpp"
 #include "layers/MaxPooling2D.hpp"
 #include "layers/MinPooling2D.hpp"
 #include "layers/AveragePooling2D.hpp"
+#include "layers/Dropout.hpp"
+
 // Puedes agregar más: Flatten, LSTM, RNN, etc.
 
 // Optimizers
@@ -31,7 +33,11 @@
 // Utils (si los necesitas)
 #include "utils/DatasetLoader.hpp"
 #include "utils/Logger.hpp"
+#include "utils/DataUtils.hpp"
 
 
 // include/metrics/Metric.hpp
 #include "metrics/Metric.hpp"
+
+// include/models/models.hpp
+# include "models/models.hpp"

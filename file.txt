@@ -1,0 +1,2431 @@
+// include/activations/Activation.hpp
+#pragma once
+#include "core/Layer.hpp"
+
+// Clase abstracta que representa una función de activación como capa
+
+enum class ActivationType { ReLU, Sigmoid, Softmax , Tanh, None};
+class Activation : public Layer {
+protected:
+    Tensor input_cache;
+
+public:
+    virtual Tensor activate(const Tensor& x) = 0;
+    virtual Tensor derivative(const Tensor& x) = 0;
+
+    Tensor forward(const Tensor& input, bool training = false) override {
+        input_cache = input;
+        return activate(input);
+    }
+
+    Tensor backward(const Tensor& grad_output) override {
+        Tensor deriv = derivative(input_cache);
+        Tensor grad_input(deriv.shape);
+        for (size_t i = 0; i < deriv.data.size(); ++i) {
+            grad_input.data[i] = grad_output.data[i] * deriv.data[i];
+        }
+        return grad_input;
+    }
+
+    void update_weights(Optimizer*) override {}
+    size_t num_params() const override { return 0; }
+
+    virtual ~Activation() = default;
+    void clear_cache() override {
+        input_cache.clear();
+    }
+
+};
+// include/activations/ReLU.hpp
+#pragma once
+#include "activations/Activation.hpp"
+#include <algorithm>
+
+class ReLU : public Activation {
+public:
+    Tensor activate(const Tensor& x) override {
+        std::vector<float> out(x.data.size());
+        for (size_t i = 0; i < x.data.size(); ++i)
+            out[i] = std::max(0.0f, x.data[i]);
+        return Tensor(out, x.shape);
+    }
+
+    Tensor derivative(const Tensor& x) override {
+        std::vector<float> grad(x.data.size());
+        for (size_t i = 0; i < x.data.size(); ++i)
+            grad[i] = x.data[i] > 0 ? 1.0f : 0.0f;
+        return Tensor(grad, x.shape);
+    }
+};
+// include/activations/Softmax.hpp
+#pragma once
+#include "activations/Activation.hpp"
+#include "core/Tensor.hpp"
+#include <vector>
+#include <cmath>
+#include <algorithm>
+#include <stdexcept>
+
+class Softmax : public Activation {
+protected:
+    Tensor output_cache;
+
+public:
+    Tensor activate(const Tensor& input) override {
+        if (input.shape.size() != 2)
+            throw std::runtime_error("Softmax expects a 2D tensor");
+
+        const int batch_size = input.shape[0];
+        const int num_classes = input.shape[1];
+        std::vector<float> output(input.data.size());
+
+        for (int i = 0; i < batch_size; ++i) {
+            const int base = i * num_classes;
+
+            // 1. Find max for numerical stability
+            float max_val = *std::max_element(input.data.begin() + base, input.data.begin() + base + num_classes);
+
+            // 2. Compute exponentials and their sum
+            float sum_exp = 0.0f;
+            for (int j = 0; j < num_classes; ++j) {
+                output[base + j] = std::exp(input.data[base + j] - max_val);
+                sum_exp += output[base + j];
+            }
+
+            // 3. Normalize
+            for (int j = 0; j < num_classes; ++j) {
+                output[base + j] /= sum_exp;
+            }
+        }
+
+        output_cache = Tensor(output, input.shape);
+        return output_cache;
+    }
+
+    Tensor derivative(const Tensor& /*input*/) override {
+        // Not used — derivative handled externally (e.g., in CrossEntropyLoss)
+        return Tensor(std::vector<float>(output_cache.data.size(), 1.0f), output_cache.shape);
+    }
+};
+
+// include/core/Layer.hpp
+#pragma once
+
+#include "Tensor.hpp"
+#include "optimizers/Optimizer.hpp"
+
+
+
+// Layer base class
+class Layer {
+public:
+    virtual Tensor forward(const Tensor& input, bool training = false) = 0;
+    virtual Tensor backward(const Tensor& grad_output) = 0;
+    virtual void update_weights(Optimizer* optimizer) = 0;
+    virtual size_t num_params() const = 0;
+    virtual ~Layer() {}
+    virtual void clear_cache(){}
+
+};
+// include/core/Loss.hpp
+#pragma once
+
+#include "Tensor.hpp"
+#include <cmath>
+#include <stdexcept>
+
+
+// Loss base class
+class Loss {
+public:
+    virtual float compute(const Tensor& y_pred, const Tensor& y_true) = 0;
+    virtual Tensor gradient(const Tensor& y_pred, const Tensor& y_true) = 0;
+    virtual ~Loss() {}
+};
+
+// Mean Squared Error loss
+class MSELoss : public Loss {
+public:
+    float compute(const Tensor& y_pred, const Tensor& y_true) override {
+        if (y_pred.shape != y_true.shape) {
+            throw std::runtime_error("Shape mismatch in loss computation");
+        }
+        float sum = 0.0f;
+        for (size_t i = 0; i < y_pred.data.size(); ++i) {
+            float diff = y_pred.data[i] - y_true.data[i];
+            sum += diff * diff;
+        }
+        return sum / y_pred.data.size();
+    }
+
+    Tensor gradient(const Tensor& y_pred, const Tensor& y_true) override {
+        if (y_pred.shape != y_true.shape) {
+            throw std::runtime_error("Shape mismatch in loss gradient");
+        }
+        std::vector<float> grad_data(y_pred.data.size());
+        for (size_t i = 0; i < y_pred.data.size(); ++i) {
+            grad_data[i] = 2.0f * (y_pred.data[i] - y_true.data[i]) / y_pred.data.size();
+        }
+        return Tensor(grad_data, y_pred.shape);
+    }
+};
+
+// Categorical Cross-Entropy loss (assumes softmax output)
+class CrossEntropyLoss : public Loss {
+public:
+    float compute(const Tensor& y_pred, const Tensor& y_true) override {
+        if (y_pred.shape != y_true.shape) {
+            throw std::runtime_error("Shape mismatch in loss computation");
+        }
+        float loss = 0.0f;
+        int batch_size = y_pred.shape[0];
+        int num_classes = y_pred.shape[1];
+
+        for (int i = 0; i < batch_size; ++i) {
+            for (int j = 0; j < num_classes; ++j) {
+                int idx = i * num_classes + j;
+                // Add small epsilon to avoid log(0)
+                loss -= y_true.data[idx] * std::log(y_pred.data[idx] + 1e-10f);
+            }
+        }
+        return loss / batch_size;
+    }
+
+    Tensor gradient(const Tensor& y_pred, const Tensor& y_true) override {
+        if (y_pred.shape != y_true.shape) {
+            throw std::runtime_error("Shape mismatch in loss gradient");
+        }
+        // For softmax + cross-entropy, gradient is simply y_pred - y_true
+        std::vector<float> grad_data(y_pred.data.size());
+        for (size_t i = 0; i < y_pred.data.size(); ++i) {
+            grad_data[i] = y_pred.data[i] - y_true.data[i];
+        }
+        return Tensor(grad_data, y_pred.shape);
+    }
+};
+
+#pragma once
+
+#include <vector>
+#include <memory>
+#include <iostream>
+#include <algorithm>
+#include <typeinfo>
+#include "Layer.hpp"
+#include "Loss.hpp"
+#include "optimizers/Optimizer.hpp"
+#include "metrics/Metric.hpp"
+#include "utils/Logger.hpp"  // Asegúrate de tener esta clase implementada
+#include <random>
+
+
+// Model class
+class Model {
+private:
+    std::vector<std::shared_ptr<Layer>> layers;
+    std::shared_ptr<Loss> loss;
+    std::shared_ptr<Optimizer> optimizer;
+    std::vector<std::shared_ptr<Metric>> metrics;
+    std::shared_ptr<Logger> logger;
+    bool training_mode;
+
+public:
+    Model() : training_mode(false) {}
+
+    size_t num_params() const {
+        return std::accumulate(layers.begin(), layers.end(), size_t(0),
+            [](size_t total, const std::shared_ptr<Layer>& layer) {
+                return total + layer->num_params();
+            });
+    }
+
+    void add(std::shared_ptr<Layer> layer) {
+        layers.push_back(layer);
+    }
+
+    void add_metric(std::shared_ptr<Metric> metric) {
+        metrics.push_back(metric);
+    }
+
+    const std::vector<std::shared_ptr<Layer>>& get_layers() const {
+        return layers;
+    }
+
+    void compile(std::shared_ptr<Loss> loss_fn, std::shared_ptr<Optimizer> opt,
+                 std::shared_ptr<Logger> log = nullptr) {
+        loss = loss_fn;
+        optimizer = opt;
+        logger = log;
+    }
+
+    void summary() const {
+        std::cout << "🧠 Modelo resumen:\n";
+        std::cout << " - Número total de parámetros: " << num_params() << "\n";
+        std::cout << " - Capas (" << layers.size() << "):\n";
+        for (size_t i = 0; i < layers.size(); ++i) {
+            std::cout << "   [" << i << "] " << typeid(*layers[i]).name() << "\n";
+        }
+    }
+
+
+    Tensor forward(const Tensor& input, bool training = false) {
+        Tensor current = input;
+        for (auto& layer : layers) {
+            current = layer->forward(current, training);
+        }
+        return current;
+    }
+
+    void evaluate(const Tensor& X, const Tensor& y, int batch_size = 32) {
+        if (X.shape[0] != y.shape[0]) {
+            throw std::runtime_error("Input and target shape mismatch in evaluation");
+        }
+
+        float eval_loss = 0.0f;
+        std::vector<float> eval_metrics(metrics.size(), 0.0f);
+        int num_batches = (X.shape[0] + batch_size - 1) / batch_size;
+
+        training_mode = false; // Set to evaluation mode
+
+        for (int b = 0; b < num_batches; ++b) {
+            // Create batch
+            int start = b * batch_size;
+            int end = std::min(start + batch_size, X.shape[0]);
+            int current_batch_size = end - start;
+            
+            // Extract batch data
+            std::vector<float> batch_data;
+            for (int i = start; i < end; ++i) {
+                for (int j = 0; j < X.total_elements() / X.shape[0]; ++j) {
+                    batch_data.push_back(X.data[i * (X.total_elements() / X.shape[0]) + j]);
+                }
+            }
+            std::vector<float> batch_target;
+            for (int i = start; i < end; ++i) {
+                for (int j = 0; j < y.shape[1]; ++j) {
+                    batch_target.push_back(y.data[i * y.shape[1] + j]);
+                }
+            }
+
+            // Create batch tensors with correct shapes
+            Tensor X_batch(batch_data, {current_batch_size, X.shape[1], X.shape[2], X.shape[3]});
+            Tensor y_batch(batch_target, {current_batch_size, y.shape[1]});
+
+            // Forward pass
+            Tensor y_pred = forward(X_batch, false);
+            // 🔥 Liberar caché
+            for (auto& layer : layers) {
+                layer->clear_cache();
+            }
+
+
+            // Compute loss
+            eval_loss += loss->compute(y_pred, y_batch);
+
+            // Compute metrics
+            for (size_t m = 0; m < metrics.size(); ++m) {
+                eval_metrics[m] += metrics[m]->compute(y_pred, y_batch);
+            }
+        }
+
+        // Average metrics over batches
+        eval_loss /= num_batches;
+        for (float& m : eval_metrics) {
+            m /= num_batches;
+        }
+
+        // Log evaluation results
+        if (logger) {
+            std::vector<std::pair<std::string, float>> val_metrics_vec;
+            for (size_t m = 0; m < metrics.size(); ++m) {
+                val_metrics_vec.emplace_back(metrics[m]->name(), eval_metrics[m]);
+            }
+            logger->log_eval(eval_loss, val_metrics_vec);
+        }
+    }
+
+    void fit(const Tensor& X, const Tensor& y, const Tensor& X_val, const Tensor& y_val, int epochs, int batch_size = 32) {
+        if (X.shape[0] != y.shape[0]) {
+            throw std::runtime_error("Input and target shape mismatch in training");
+        }
+        if (X_val.shape[0] != y_val.shape[0]) {
+            throw std::runtime_error("Input and target shape mismatch in test set");
+        }
+
+        std::vector<int> indices(X.shape[0]);
+        std::iota(indices.begin(), indices.end(), 0);
+        std::mt19937 rng(std::random_device{}());
+
+        for (int epoch = 0; epoch < epochs; ++epoch) {
+            std::shuffle(indices.begin(), indices.end(), rng);
+            
+            float epoch_loss = 0.0f;
+            std::vector<float> epoch_metrics(metrics.size(), 0.0f);
+            int num_batches = (X.shape[0] + batch_size - 1) / batch_size;
+
+            training_mode = true; // Set to training mode
+
+//            std::cout << "\n📦 Época " << epoch + 1 << "/" << epochs << "\n";
+            for (int b = 0; b < num_batches; ++b) {
+                // Create batch
+                int start = b * batch_size;
+                int end = std::min(start + batch_size, X.shape[0]);
+                int current_batch_size = end - start;
+                
+                // Extract batch data
+                std::vector<float> batch_data;
+                for (int i = start; i < end; ++i) {
+                    int idx = indices[i];
+                    for (int j = 0; j < X.total_elements() / X.shape[0]; ++j) {
+                        batch_data.push_back(X.data[idx * (X.total_elements() / X.shape[0]) + j]);
+                    }
+                }
+                std::vector<float> batch_target;
+                for (int i = start; i < end; ++i) {
+                    int idx = indices[i];
+                    for (int j = 0; j < y.shape[1]; ++j) {
+                        batch_target.push_back(y.data[idx * y.shape[1] + j]);
+                    }
+                }
+
+                // Create batch tensors with correct shapes
+                Tensor X_batch(batch_data, {current_batch_size, X.shape[1], X.shape[2], X.shape[3]});
+                Tensor y_batch(batch_target, {current_batch_size, y.shape[1]});
+
+                // Forward pass
+                Tensor y_pred = forward(X_batch, true);
+
+                // Compute loss
+                float batch_loss = loss->compute(y_pred, y_batch);
+                epoch_loss += batch_loss;
+
+                // Compute metrics
+                for (size_t m = 0; m < metrics.size(); ++m) {
+                    epoch_metrics[m] += metrics[m]->compute(y_pred, y_batch);
+                }
+
+                // Backward pass
+                Tensor grad = loss->gradient(y_pred, y_batch);
+                for (auto it = layers.rbegin(); it != layers.rend(); ++it) {
+                    grad = (*it)->backward(grad);
+                }
+
+                // Update weights
+                for (auto& layer : layers) {
+                    layer->update_weights(optimizer.get());
+                }
+
+                // 🔥 Clear caches después del backward y update
+                for (auto& layer : layers) {
+                    layer->clear_cache();
+                }
+            }
+
+            // Average metrics over batches
+            epoch_loss /= num_batches;
+            for (float& m : epoch_metrics) {
+                m /= num_batches;
+            }
+
+            // Evaluate on test set
+            float eval_loss = 0.0f;
+            std::vector<float> eval_metrics(metrics.size(), 0.0f);
+            {
+                training_mode = false;
+                Tensor y_pred = forward(X_val, false);
+                eval_loss = loss->compute(y_pred, y_val);
+
+                for (size_t m = 0; m < metrics.size(); ++m) {
+                    eval_metrics[m] = metrics[m]->compute(y_pred, y_val);
+                }
+            }
+            // Log training results
+            if (logger) {
+                std::vector<std::pair<std::string, float>> train_metrics_vec;
+                for (size_t m = 0; m < metrics.size(); ++m) {
+                    train_metrics_vec.emplace_back(metrics[m]->name(), epoch_metrics[m]);
+                }
+
+                std::vector<std::pair<std::string, float>> val_metrics_vec;
+                for (size_t m = 0; m < metrics.size(); ++m) {
+                    val_metrics_vec.emplace_back(metrics[m]->name(), eval_metrics[m]);
+                }
+
+                logger->log_epoch(epoch + 1, epochs,
+                                epoch_loss, train_metrics_vec,
+                                eval_loss, val_metrics_vec);
+            }
+
+            // Evaluate on test set
+            //evaluate(X_val, y_val, batch_size);
+        }
+    }
+
+
+
+
+};
+
+
+   #pragma once
+
+#include <vector>
+#include <stdexcept>
+#include <numeric>
+#include <iostream>
+#include <functional>
+#include <cmath>
+#include <random>
+#include <string>
+#include <sstream>
+#include <omp.h>
+// Tensor class
+
+class Tensor {
+public:
+    std::vector<float> data;
+    std::vector<int> shape; // Ej: {batch, channels, height, width}
+
+    Tensor() = default;
+    Tensor(const std::vector<float>& d, const std::vector<int>& s) : data(d), shape(s) {
+        if (d.size() != std::accumulate(s.begin(), s.end(), 1, std::multiplies<int>())) {
+            throw std::runtime_error("Data size doesn't match shape");
+        }
+    }
+    // Constructor que recibe solo shape y rellena data con ceros
+    Tensor(const std::vector<int>& s) : shape(s) {
+        int total = std::accumulate(s.begin(), s.end(), 1, std::multiplies<int>());
+        data.resize(total, 0.0f); // Inicializa con ceros
+    }
+
+    
+    size_t size() const { return data.size(); }
+    
+    // Helper to get total elements from shape
+    size_t total_elements() const {
+        return std::accumulate(shape.begin(), shape.end(), 1, std::multiplies<int>());
+    }
+Tensor matmul(const Tensor& other) const {
+    // 2D x 2D => (M, K) x (K, N) = (M, N)
+    if (shape.size() == 2 && other.shape.size() == 2) {
+        int M = shape[0];
+        int K = shape[1];
+        int N = other.shape[1];
+        if (K != other.shape[0])
+            throw std::runtime_error("Shape mismatch in 2D matmul");
+
+        std::vector<float> result_data(M * N, 0.0f);
+
+        #pragma omp parallel for collapse(2)
+        for (int i = 0; i < M; ++i) {
+            for (int j = 0; j < N; ++j) {
+                float sum = 0.0f;
+                for (int k = 0; k < K; ++k) {
+                    sum += data[i * K + k] * other.data[k * N + j];
+                }
+                result_data[i * N + j] = sum;
+            }
+        }
+
+        return Tensor(result_data, {M, N});
+    }
+
+    // 3D x 3D => (B, M, K) x (B, K, N) = (B, M, N)
+    if (shape.size() == 3 && other.shape.size() == 3) {
+        int B = shape[0];
+        int M = shape[1];
+        int K = shape[2];
+        int K2 = other.shape[1];
+        int N = other.shape[2];
+        if (B != other.shape[0] || K != K2)
+            throw std::runtime_error("Shape mismatch in 3D batched matmul");
+
+        std::vector<float> result_data(B * M * N, 0.0f);
+
+        #pragma omp parallel for collapse(3)
+        for (int b = 0; b < B; ++b) {
+            for (int i = 0; i < M; ++i) {
+                for (int j = 0; j < N; ++j) {
+                    float sum = 0.0f;
+                    for (int k = 0; k < K; ++k) {
+                        sum += data[b * M * K + i * K + k] * other.data[b * K * N + k * N + j];
+                    }
+                    result_data[b * M * N + i * N + j] = sum;
+                }
+            }
+        }
+
+        return Tensor(result_data, {B, M, N});
+    }
+
+    // 3D x 2D => (B, M, K) x (K, N) = (B, M, N)
+    if (shape.size() == 3 && other.shape.size() == 2) {
+        int B = shape[0];
+        int M = shape[1];
+        int K = shape[2];
+        int K2 = other.shape[0];
+        int N = other.shape[1];
+        if (K != K2)
+            throw std::runtime_error("Shape mismatch in 3D x 2D matmul");
+
+        std::vector<float> result_data(B * M * N, 0.0f);
+
+        #pragma omp parallel for collapse(3)
+        for (int b = 0; b < B; ++b) {
+            for (int i = 0; i < M; ++i) {
+                for (int j = 0; j < N; ++j) {
+                    float sum = 0.0f;
+                    for (int k = 0; k < K; ++k) {
+                        sum += data[b * M * K + i * K + k] * other.data[k * N + j];
+                    }
+                    result_data[b * M * N + i * N + j] = sum;
+                }
+            }
+        }
+
+        return Tensor(result_data, {B, M, N});
+    }
+
+    throw std::runtime_error("Unsupported shapes for matmul: left shape = " + shape_str() + ", right shape = " + other.shape_str());
+}
+    // Element-wise addition with broadcasting support for bias
+Tensor operator+(const Tensor& other) const {
+    if (shape == other.shape) {
+        // Mismo shape, suma directa
+        std::vector<float> result_data(data.size());
+        for (size_t i = 0; i < data.size(); ++i)
+            result_data[i] = data[i] + other.data[i];
+        return Tensor(result_data, shape);
+    }
+
+    // Broadcasting: (B, D) + (D)
+    if (shape.size() == 2 && other.shape.size() == 1 && shape[1] == other.shape[0]) {
+        int B = shape[0], D = shape[1];
+        std::vector<float> result_data(data.size());
+        for (int i = 0; i < B; ++i)
+            for (int j = 0; j < D; ++j)
+                result_data[i * D + j] = data[i * D + j] + other.data[j];
+        return Tensor(result_data, shape);
+    }
+
+    // Broadcasting: (B, N, D) + (D)
+    if (shape.size() == 3 && other.shape.size() == 1 && shape[2] == other.shape[0]) {
+        int B = shape[0], N = shape[1], D = shape[2];
+        std::vector<float> result_data(data.size());
+        for (int b = 0; b < B; ++b)
+            for (int n = 0; n < N; ++n)
+                for (int d = 0; d < D; ++d)
+                    result_data[b * N * D + n * D + d] =
+                        data[b * N * D + n * D + d] + other.data[d];
+        return Tensor(result_data, shape);
+    }
+
+    // Broadcasting: (B, N, D) + (1, 1, D)
+    if (shape.size() == 3 && other.shape.size() == 3 &&
+        other.shape[0] == 1 && other.shape[1] == 1 && other.shape[2] == shape[2]) {
+        int B = shape[0], N = shape[1], D = shape[2];
+        std::vector<float> result_data(data.size());
+        for (int b = 0; b < B; ++b)
+            for (int n = 0; n < N; ++n)
+                for (int d = 0; d < D; ++d)
+                    result_data[b * N * D + n * D + d] =
+                        data[b * N * D + n * D + d] + other.data[d];
+        return Tensor(result_data, shape);
+    }
+
+    throw std::runtime_error("Shape mismatch in Tensor::operator+");
+}
+
+
+    // Transpose for 2D tensor
+    
+    
+
+
+    void print_shape() const {
+        std::cout << "Shape: (";
+        for (size_t i = 0; i < shape.size(); ++i) {
+            std::cout << shape[i];
+            if (i != shape.size() - 1) std::cout << ", ";
+        }
+        std::cout << ")\n";
+    }
+
+    void print_matrix() const {
+        if (shape.size() == 4) {
+            int N = shape[0], C = shape[1], H = shape[2], W = shape[3];
+            for (int n = 0; n < N; ++n) {
+                for (int c = 0; c < C; ++c) {
+                    std::cout << "🖼️ Sample " << n << ", canal " << c << ":\n";
+                    for (int h = 0; h < H; ++h) {
+                        for (int w = 0; w < W; ++w) {
+                            int index = n * C * H * W + c * H * W + h * W + w;
+                            std::cout << data[index] << "\t";
+                        }
+                        std::cout << "\n";
+                    }
+                }
+            }
+        } else if (shape.size() == 2) {
+            int N = shape[0], F = shape[1];
+            for (int n = 0; n < N; ++n) {
+                std::cout << "🧾 Sample " << n << " (Flatten): ";
+                for (int f = 0; f < F; ++f) {
+                    int index = n * F + f;
+                    std::cout << data[index] << " ";
+                }
+                std::cout << "\n";
+            }
+        } else if (shape.size() == 1) {
+            std::cout << "📤 Vector plano: ";
+            for (int i = 0; i < shape[0]; ++i) {
+                std::cout << data[i] << " ";
+            }
+            std::cout << "\n";
+        } else {
+            std::cout << "⚠️  print_matrix no soporta tensores con " << shape.size() << " dimensiones.\n";
+        }
+    }
+
+    Tensor slice(int start, int end) const {
+        if (shape.empty() || start < 0 || end > shape[0] || start >= end) {
+            throw std::runtime_error("Invalid slice range");
+        }
+
+        int batch = shape[0];
+        int elements_per_sample = total_elements() / batch;
+
+        std::vector<float> sliced_data;
+        sliced_data.reserve((end - start) * elements_per_sample);
+
+        for (int i = start; i < end; ++i) {
+            sliced_data.insert(
+                sliced_data.end(),
+                data.begin() + i * elements_per_sample,
+                data.begin() + (i + 1) * elements_per_sample
+            );
+        }
+
+        std::vector<int> new_shape = shape;
+        new_shape[0] = end - start;
+        return Tensor(sliced_data, new_shape);
+    }
+
+    Tensor sum_rows() const {
+        if (shape.size() != 2)
+            throw std::runtime_error("sum_rows solo soporta tensores 2D");
+
+        int rows = shape[0];
+        int cols = shape[1];
+        std::vector<float> result(cols, 0.0f);
+
+        for (int i = 0; i < rows; ++i)
+            for (int j = 0; j < cols; ++j)
+                result[j] += data[i * cols + j];
+
+        return Tensor(result, {cols});
+    }
+
+    // Acceso directo a índices (batch, channel, h, w)
+    float& at(int n, int c, int h, int w) {
+        int idx = n * shape[1] * shape[2] * shape[3]
+                + c * shape[2] * shape[3]
+                + h * shape[3]
+                + w;
+        return data[idx];
+    }
+
+    const float& at(int n, int c, int h, int w) const {
+        int idx = n * shape[1] * shape[2] * shape[3]
+                + c * shape[2] * shape[3]
+                + h * shape[3]
+                + w;
+        return data[idx];
+    }
+    // Acceso con vector de índices (general)
+    float& at(const std::vector<int>& indices) {
+        if (indices.size() != shape.size())
+            throw std::runtime_error("Tensor::at - shape mismatch");
+        int idx = 0;
+        int stride = 1;
+        for (int i = shape.size() - 1; i >= 0; --i) {
+            idx += indices[i] * stride;
+            stride *= shape[i];
+        }
+        return data[idx];
+    }
+
+    const float& at(const std::vector<int>& indices) const {
+        if (indices.size() != shape.size())
+            throw std::runtime_error("Tensor::at - shape mismatch");
+        int idx = 0;
+        int stride = 1;
+        for (int i = shape.size() - 1; i >= 0; --i) {
+            idx += indices[i] * stride;
+            stride *= shape[i];
+        }
+        return data[idx];
+    }
+
+    // Padding con ceros (Solo para tensores 4D)
+    Tensor pad(int pad) const {
+        if (pad == 0) return *this;
+
+        if (shape.size() != 4)
+            throw std::runtime_error("pad solo soporta tensores 4D");
+
+        int N = shape[0], C = shape[1], H = shape[2], W = shape[3];
+        int H_pad = H + 2 * pad;
+        int W_pad = W + 2 * pad;
+
+        Tensor result({N, C, H_pad, W_pad});
+
+        #pragma omp parallel for collapse(4)
+        for (int n = 0; n < N; ++n)
+            for (int c = 0; c < C; ++c)
+                for (int h = 0; h < H; ++h)
+                    for (int w = 0; w < W; ++w)
+                        result.at(n, c, h + pad, w + pad) = at(n, c, h, w);
+
+        return result;
+    }
+
+    // Quitar padding (Solo para tensores 4D)
+    Tensor unpad(int pad) const {
+        if (pad == 0) return *this;
+
+        if (shape.size() != 4)
+            throw std::runtime_error("unpad solo soporta tensores 4D");
+
+        int N = shape[0], C = shape[1], H = shape[2] - 2 * pad, W = shape[3] - 2 * pad;
+
+        Tensor result({N, C, H, W});
+
+        #pragma omp parallel for collapse(4)
+        for (int n = 0; n < N; ++n)
+            for (int c = 0; c < C; ++c)
+                for (int h = 0; h < H; ++h)
+                    for (int w = 0; w < W; ++w)
+                        result.at(n, c, h, w) = at(n, c, h + pad, w + pad);
+
+        return result;
+    }
+
+    // Rellenar con un valor específico
+    void fill(float val) {
+        std::fill(data.begin(), data.end(), val);
+    }
+
+    // Crea tensor lleno de ceros
+    static Tensor zeros(const std::vector<int>& shape_) {
+        int total = std::accumulate(shape_.begin(), shape_.end(), 1, std::multiplies<>());
+        return Tensor(std::vector<float>(total, 0.0f), shape_);
+    }
+
+    Tensor operator*(float scalar) const {
+        std::vector<float> result_data(data.size());
+        for (size_t i = 0; i < data.size(); ++i)
+            result_data[i] = data[i] * scalar;
+        return Tensor(result_data, shape);
+    }
+
+    Tensor operator*(const Tensor& other) const {
+        if (shape != other.shape)
+            throw std::runtime_error("Shape mismatch in element-wise multiplication");
+        
+        std::vector<float> result_data(data.size());
+        for (size_t i = 0; i < data.size(); ++i)
+            result_data[i] = data[i] * other.data[i];
+        return Tensor(result_data, shape);
+    }
+
+   Tensor softmax(int axis = -1) const {
+    if (shape.size() == 2) {
+        int rows = shape[0], cols = shape[1];
+        Tensor result(shape);
+        for (int i = 0; i < rows; ++i) {
+            float max_val = -INFINITY;
+            for (int j = 0; j < cols; ++j)
+                max_val = std::max(max_val, at({i, j}));
+
+            float sum = 0.0f;
+            for (int j = 0; j < cols; ++j) {
+                float val = std::exp(at({i, j}) - max_val);
+                result.at({i, j}) = val;
+                sum += val;
+            }
+            for (int j = 0; j < cols; ++j)
+                result.at({i, j}) /= sum;
+        }
+        return result;
+    }
+
+    if (shape.size() == 3 && axis == -1) {
+        int B = shape[0], T = shape[1], D = shape[2];
+        Tensor result(shape);
+        for (int b = 0; b < B; ++b) {
+            for (int t = 0; t < T; ++t) {
+                float max_val = -INFINITY;
+                for (int d = 0; d < D; ++d)
+                    max_val = std::max(max_val, at({b, t, d}));
+
+                float sum = 0.0f;
+                for (int d = 0; d < D; ++d) {
+                    float val = std::exp(at({b, t, d}) - max_val);
+                    result.at({b, t, d}) = val;
+                    sum += val;
+                }
+                for (int d = 0; d < D; ++d)
+                    result.at({b, t, d}) /= sum;
+            }
+        }
+        return result;
+    }
+
+    if (shape.size() == 4) {
+        int B = shape[0], H = shape[1], T = shape[2], D = shape[3];
+        Tensor result(shape);
+        for (int b = 0; b < B; ++b) {
+            for (int h = 0; h < H; ++h) {
+                for (int t = 0; t < T; ++t) {
+                    float max_val = -INFINITY;
+                    for (int d = 0; d < D; ++d)
+                        max_val = std::max(max_val, at({b, h, t, d}));
+
+                    float sum = 0.0f;
+                    for (int d = 0; d < D; ++d) {
+                        float val = std::exp(at({b, h, t, d}) - max_val);
+                        result.at({b, h, t, d}) = val;
+                        sum += val;
+                    }
+                    for (int d = 0; d < D; ++d)
+                        result.at({b, h, t, d}) /= sum;
+                }
+            }
+        }
+        return result;
+    }
+
+    throw std::runtime_error("Softmax solo implementado para tensores 2D, 3D o 4D (axis=-1), recibí shape: " + shape_str());
+}
+
+
+    Tensor reshape(const std::vector<int>& new_shape) const {
+        int new_total = std::accumulate(new_shape.begin(), new_shape.end(), 1, std::multiplies<int>());
+        if (new_total != static_cast<int>(data.size()))
+            throw std::runtime_error("reshape: total size mismatch");
+        return Tensor(data, new_shape);
+    }
+
+    Tensor transpose(const std::vector<int>& perm) const {
+        if (perm.size() != shape.size())
+            throw std::runtime_error("transpose: perm dimension mismatch");
+
+        std::vector<int> new_shape(shape.size());
+        for (size_t i = 0; i < perm.size(); ++i)
+            new_shape[i] = shape[perm[i]];
+
+        // Cálculo de strides
+        std::vector<int> old_strides(shape.size(), 1);
+        for (int i = shape.size() - 2; i >= 0; --i)
+            old_strides[i] = old_strides[i + 1] * shape[i + 1];
+
+        std::vector<int> new_strides(shape.size(), 1);
+        for (int i = shape.size() - 2; i >= 0; --i)
+            new_strides[i] = new_strides[i + 1] * new_shape[i + 1];
+
+        std::vector<float> new_data(data.size());
+
+        for (size_t idx = 0; idx < data.size(); ++idx) {
+            int old_idx = idx;
+            std::vector<int> old_indices(shape.size(), 0);
+            for (size_t i = 0; i < shape.size(); ++i) {
+                old_indices[i] = old_idx / old_strides[i];
+                old_idx %= old_strides[i];
+            }
+
+            std::vector<int> new_indices(shape.size());
+            for (size_t i = 0; i < shape.size(); ++i)
+                new_indices[i] = old_indices[perm[i]];
+
+            int new_flat_idx = 0;
+            for (size_t i = 0; i < new_shape.size(); ++i)
+                new_flat_idx += new_indices[i] * new_strides[i];
+
+            new_data[new_flat_idx] = data[idx];
+        }
+
+        return Tensor(new_data, new_shape);
+    }
+    
+    /*
+    Tensor transpose() const {
+        if (shape.size() < 2)
+            throw std::runtime_error("Transpose requires at least 2D tensor");
+        return transpose(shape.size() - 2, shape.size() - 1);
+    }
+    */
+    
+    Tensor transpose(int dim0 = -1, int dim1 = -1) const {
+        if (shape.size() < 2 || shape.size() > 4) {
+            throw std::runtime_error("Transpose supported for 2D, 3D, or 4D tensors only");
+        }
+
+        if (dim0 == -1 && dim1 == -1) {
+            dim0 = shape.size() - 2;
+            dim1 = shape.size() - 1;
+        }
+        if (dim0 < 0 || dim1 < 0 || dim0 >= (int)shape.size() || dim1 >= (int)shape.size() || dim0 == dim1) {
+            throw std::runtime_error("Invalid transpose dimensions");
+        }
+
+        std::vector<int> new_shape = shape;
+        std::swap(new_shape[dim0], new_shape[dim1]);
+        std::vector<float> new_data(size(), 0.0f);
+
+        if (shape.size() == 2) {
+            int rows = shape[0];
+            int cols = shape[1];
+
+            #pragma omp parallel for collapse(2)
+            for (int i = 0; i < rows; ++i) {
+                for (int j = 0; j < cols; ++j) {
+                    new_data[j * rows + i] = data[i * cols + j];
+                }
+            }
+
+        } else if (shape.size() == 3) {
+            int d0 = shape[0], d1 = shape[1], d2 = shape[2];
+
+            #pragma omp parallel for collapse(3)
+            for (int i = 0; i < d0; ++i) {
+                for (int j = 0; j < d1; ++j) {
+                    for (int k = 0; k < d2; ++k) {
+                        int old_idx = i * d1 * d2 + j * d2 + k;
+                        int new_idx;
+                        if (dim0 == 1 && dim1 == 2) {
+                            new_idx = i * d2 * d1 + k * d1 + j;
+                        } else if (dim0 == 0 && dim1 == 2) {
+                            new_idx = k * d1 * d0 + j * d0 + i;
+                        } else if (dim0 == 0 && dim1 == 1) {
+                            new_idx = j * d0 * d2 + i * d2 + k;
+                        } else {
+                            throw std::runtime_error("Unsupported transpose dims for 3D tensor");
+                        }
+                        new_data[new_idx] = data[old_idx];
+                    }
+                }
+            }
+
+        } else { // 4D
+            int d0 = shape[0], d1 = shape[1], d2 = shape[2], d3 = shape[3];
+
+            #pragma omp parallel for collapse(4)
+            for (int i = 0; i < d0; ++i) {
+                for (int j = 0; j < d1; ++j) {
+                    for (int k = 0; k < d2; ++k) {
+                        for (int l = 0; l < d3; ++l) {
+                            int old_idx = i * d1 * d2 * d3 + j * d2 * d3 + k * d3 + l;
+                            int new_idx;
+
+                            if (dim0 == 2 && dim1 == 3) {
+                                new_idx = i * d1 * d3 * d2 + j * d3 * d2 + l * d2 + k;
+                            } else if (dim0 == 1 && dim1 == 3) {
+                                new_idx = i * d3 * d2 * d1 + l * d2 * d1 + k * d1 + j;
+                            } else if (dim0 == 1 && dim1 == 2) {
+                                new_idx = i * d2 * d3 * d1 + k * d3 * d1 + l * d1 + j;
+                            } else {
+                                throw std::runtime_error("Unsupported transpose dimensions for 4D tensor");
+                            }
+                            new_data[new_idx] = data[old_idx];
+                        }
+                    }
+                }
+            }
+        }
+
+        return Tensor(new_data, new_shape);
+    }
+/*
+
+    Tensor transpose() const {
+        if (shape.size() != 2) {
+            throw std::runtime_error("Transpose only supported for 2D tensors");
+        }
+        std::vector<float> result_data(size());
+        for (int i = 0; i < shape[0]; ++i) {
+            for (int j = 0; j < shape[1]; ++j) {
+                result_data[j * shape[0] + i] = data[i * shape[1] + j];
+            }
+        }
+        return Tensor(result_data, {shape[1], shape[0]});
+    }
+    
+    // Transpose dos ejes específicos
+    Tensor transpose(int dim1, int dim2) const {
+        std::vector<int> perm(shape.size());
+        std::iota(perm.begin(), perm.end(), 0);
+        std::swap(perm[dim1], perm[dim2]);
+        return transpose(perm);
+    }
+*/
+    
+    Tensor dropout_mask(float drop_prob, std::mt19937& rng) const {
+        std::bernoulli_distribution dist(1.0 - drop_prob);
+        std::vector<float> mask_data(data.size());
+        for (size_t i = 0; i < data.size(); ++i)
+            mask_data[i] = dist(rng) ? 1.0f : 0.0f;
+        return Tensor(mask_data, shape);
+    }
+
+    Tensor operator+(float scalar) const {
+        std::vector<float> result_data(data.size());
+        for (size_t i = 0; i < data.size(); ++i)
+            result_data[i] = data[i] + scalar;
+        return Tensor(result_data, shape);
+    }
+
+    Tensor operator-(float scalar) const {
+        std::vector<float> result_data(data.size());
+        for (size_t i = 0; i < data.size(); ++i)
+            result_data[i] = data[i] - scalar;
+        return Tensor(result_data, shape);
+    }
+
+    Tensor operator/(float scalar) const {
+        if (scalar == 0.0f)
+            throw std::runtime_error("Division by zero in Tensor");
+        std::vector<float> result_data(data.size());
+        for (size_t i = 0; i < data.size(); ++i)
+            result_data[i] = data[i] / scalar;
+        return Tensor(result_data, shape);
+    }
+
+    std::string shape_str() const {
+        std::ostringstream oss;
+        oss << "(";
+        for (size_t i = 0; i < shape.size(); ++i) {
+            oss << shape[i];
+            if (i != shape.size() - 1)
+                oss << ", ";
+        }
+        oss << ")";
+        return oss.str();
+    }
+    void clear() {
+    data.clear();
+    shape.clear();
+}
+
+};
+
+
+#pragma once
+
+#include <vector>
+#include <stdexcept>
+#include <numeric>
+#include <iostream>
+#include <functional>
+#include <cmath>
+#include <random>
+#include <string>
+#include <sstream>
+#include <omp.h>
+// Tensor class
+
+class Tensor {
+public:
+    std::vector<float> data;
+    std::vector<int> shape; // Ej: {batch, channels, height, width}
+
+    Tensor() = default;
+    Tensor(const std::vector<float>& d, const std::vector<int>& s) : data(d), shape(s) {
+        if (d.size() != std::accumulate(s.begin(), s.end(), 1, std::multiplies<int>())) {
+            throw std::runtime_error("Data size doesn't match shape");
+        }
+    }
+    // Constructor que recibe solo shape y rellena data con ceros
+    Tensor(const std::vector<int>& s) : shape(s) {
+        int total = std::accumulate(s.begin(), s.end(), 1, std::multiplies<int>());
+        data.resize(total, 0.0f); // Inicializa con ceros
+    }
+
+    
+    size_t size() const { return data.size(); }
+    
+    // Helper to get total elements from shape
+    size_t total_elements() const {
+        return std::accumulate(shape.begin(), shape.end(), 1, std::multiplies<int>());
+    }
+Tensor matmul(const Tensor& other) const {
+    // 2D x 2D => (M, K) x (K, N) = (M, N)
+    if (shape.size() == 2 && other.shape.size() == 2) {
+        int M = shape[0];
+        int K = shape[1];
+        int N = other.shape[1];
+        if (K != other.shape[0])
+            throw std::runtime_error("Shape mismatch in 2D matmul");
+
+        std::vector<float> result_data(M * N, 0.0f);
+
+        #pragma omp parallel for collapse(2)
+        for (int i = 0; i < M; ++i) {
+            for (int j = 0; j < N; ++j) {
+                float sum = 0.0f;
+                for (int k = 0; k < K; ++k) {
+                    sum += data[i * K + k] * other.data[k * N + j];
+                }
+                result_data[i * N + j] = sum;
+            }
+        }
+
+        return Tensor(result_data, {M, N});
+    }
+
+    // 3D x 3D => (B, M, K) x (B, K, N) = (B, M, N)
+    if (shape.size() == 3 && other.shape.size() == 3) {
+        int B = shape[0];
+        int M = shape[1];
+        int K = shape[2];
+        int K2 = other.shape[1];
+        int N = other.shape[2];
+        if (B != other.shape[0] || K != K2)
+            throw std::runtime_error("Shape mismatch in 3D batched matmul");
+
+        std::vector<float> result_data(B * M * N, 0.0f);
+
+        #pragma omp parallel for collapse(3)
+        for (int b = 0; b < B; ++b) {
+            for (int i = 0; i < M; ++i) {
+                for (int j = 0; j < N; ++j) {
+                    float sum = 0.0f;
+                    for (int k = 0; k < K; ++k) {
+                        sum += data[b * M * K + i * K + k] * other.data[b * K * N + k * N + j];
+                    }
+                    result_data[b * M * N + i * N + j] = sum;
+                }
+            }
+        }
+
+        return Tensor(result_data, {B, M, N});
+    }
+
+    // 3D x 2D => (B, M, K) x (K, N) = (B, M, N)
+    if (shape.size() == 3 && other.shape.size() == 2) {
+        int B = shape[0];
+        int M = shape[1];
+        int K = shape[2];
+        int K2 = other.shape[0];
+        int N = other.shape[1];
+        if (K != K2)
+            throw std::runtime_error("Shape mismatch in 3D x 2D matmul");
+
+        std::vector<float> result_data(B * M * N, 0.0f);
+
+        #pragma omp parallel for collapse(3)
+        for (int b = 0; b < B; ++b) {
+            for (int i = 0; i < M; ++i) {
+                for (int j = 0; j < N; ++j) {
+                    float sum = 0.0f;
+                    for (int k = 0; k < K; ++k) {
+                        sum += data[b * M * K + i * K + k] * other.data[k * N + j];
+                    }
+                    result_data[b * M * N + i * N + j] = sum;
+                }
+            }
+        }
+
+        return Tensor(result_data, {B, M, N});
+    }
+
+    throw std::runtime_error("Unsupported shapes for matmul: left shape = " + shape_str() + ", right shape = " + other.shape_str());
+}
+    // Element-wise addition with broadcasting support for bias
+Tensor operator+(const Tensor& other) const {
+    if (shape == other.shape) {
+        // Mismo shape, suma directa
+        std::vector<float> result_data(data.size());
+        for (size_t i = 0; i < data.size(); ++i)
+            result_data[i] = data[i] + other.data[i];
+        return Tensor(result_data, shape);
+    }
+
+    // Broadcasting: (B, D) + (D)
+    if (shape.size() == 2 && other.shape.size() == 1 && shape[1] == other.shape[0]) {
+        int B = shape[0], D = shape[1];
+        std::vector<float> result_data(data.size());
+        for (int i = 0; i < B; ++i)
+            for (int j = 0; j < D; ++j)
+                result_data[i * D + j] = data[i * D + j] + other.data[j];
+        return Tensor(result_data, shape);
+    }
+
+    // Broadcasting: (B, N, D) + (D)
+    if (shape.size() == 3 && other.shape.size() == 1 && shape[2] == other.shape[0]) {
+        int B = shape[0], N = shape[1], D = shape[2];
+        std::vector<float> result_data(data.size());
+        for (int b = 0; b < B; ++b)
+            for (int n = 0; n < N; ++n)
+                for (int d = 0; d < D; ++d)
+                    result_data[b * N * D + n * D + d] =
+                        data[b * N * D + n * D + d] + other.data[d];
+        return Tensor(result_data, shape);
+    }
+
+    // Broadcasting: (B, N, D) + (1, 1, D)
+    if (shape.size() == 3 && other.shape.size() == 3 &&
+        other.shape[0] == 1 && other.shape[1] == 1 && other.shape[2] == shape[2]) {
+        int B = shape[0], N = shape[1], D = shape[2];
+        std::vector<float> result_data(data.size());
+        for (int b = 0; b < B; ++b)
+            for (int n = 0; n < N; ++n)
+                for (int d = 0; d < D; ++d)
+                    result_data[b * N * D + n * D + d] =
+                        data[b * N * D + n * D + d] + other.data[d];
+        return Tensor(result_data, shape);
+    }
+
+    throw std::runtime_error("Shape mismatch in Tensor::operator+");
+}
+
+
+    // Transpose for 2D tensor
+    
+    
+
+
+    void print_shape() const {
+        std::cout << "Shape: (";
+        for (size_t i = 0; i < shape.size(); ++i) {
+            std::cout << shape[i];
+            if (i != shape.size() - 1) std::cout << ", ";
+        }
+        std::cout << ")\n";
+    }
+
+    void print_matrix() const {
+        if (shape.size() == 4) {
+            int N = shape[0], C = shape[1], H = shape[2], W = shape[3];
+            for (int n = 0; n < N; ++n) {
+                for (int c = 0; c < C; ++c) {
+                    std::cout << "🖼️ Sample " << n << ", canal " << c << ":\n";
+                    for (int h = 0; h < H; ++h) {
+                        for (int w = 0; w < W; ++w) {
+                            int index = n * C * H * W + c * H * W + h * W + w;
+                            std::cout << data[index] << "\t";
+                        }
+                        std::cout << "\n";
+                    }
+                }
+            }
+        } else if (shape.size() == 2) {
+            int N = shape[0], F = shape[1];
+            for (int n = 0; n < N; ++n) {
+                std::cout << "🧾 Sample " << n << " (Flatten): ";
+                for (int f = 0; f < F; ++f) {
+                    int index = n * F + f;
+                    std::cout << data[index] << " ";
+                }
+                std::cout << "\n";
+            }
+        } else if (shape.size() == 1) {
+            std::cout << "📤 Vector plano: ";
+            for (int i = 0; i < shape[0]; ++i) {
+                std::cout << data[i] << " ";
+            }
+            std::cout << "\n";
+        } else {
+            std::cout << "⚠️  print_matrix no soporta tensores con " << shape.size() << " dimensiones.\n";
+        }
+    }
+
+    Tensor slice(int start, int end) const {
+        if (shape.empty() || start < 0 || end > shape[0] || start >= end) {
+            throw std::runtime_error("Invalid slice range");
+        }
+
+        int batch = shape[0];
+        int elements_per_sample = total_elements() / batch;
+
+        std::vector<float> sliced_data;
+        sliced_data.reserve((end - start) * elements_per_sample);
+
+        for (int i = start; i < end; ++i) {
+            sliced_data.insert(
+                sliced_data.end(),
+                data.begin() + i * elements_per_sample,
+                data.begin() + (i + 1) * elements_per_sample
+            );
+        }
+
+        std::vector<int> new_shape = shape;
+        new_shape[0] = end - start;
+        return Tensor(sliced_data, new_shape);
+    }
+
+    Tensor sum_rows() const {
+        if (shape.size() != 2)
+            throw std::runtime_error("sum_rows solo soporta tensores 2D");
+
+        int rows = shape[0];
+        int cols = shape[1];
+        std::vector<float> result(cols, 0.0f);
+
+        for (int i = 0; i < rows; ++i)
+            for (int j = 0; j < cols; ++j)
+                result[j] += data[i * cols + j];
+
+        return Tensor(result, {cols});
+    }
+
+    // Acceso directo a índices (batch, channel, h, w)
+    float& at(int n, int c, int h, int w) {
+        int idx = n * shape[1] * shape[2] * shape[3]
+                + c * shape[2] * shape[3]
+                + h * shape[3]
+                + w;
+        return data[idx];
+    }
+
+    const float& at(int n, int c, int h, int w) const {
+        int idx = n * shape[1] * shape[2] * shape[3]
+                + c * shape[2] * shape[3]
+                + h * shape[3]
+                + w;
+        return data[idx];
+    }
+    // Acceso con vector de índices (general)
+    float& at(const std::vector<int>& indices) {
+        if (indices.size() != shape.size())
+            throw std::runtime_error("Tensor::at - shape mismatch");
+        int idx = 0;
+        int stride = 1;
+        for (int i = shape.size() - 1; i >= 0; --i) {
+            idx += indices[i] * stride;
+            stride *= shape[i];
+        }
+        return data[idx];
+    }
+
+    const float& at(const std::vector<int>& indices) const {
+        if (indices.size() != shape.size())
+            throw std::runtime_error("Tensor::at - shape mismatch");
+        int idx = 0;
+        int stride = 1;
+        for (int i = shape.size() - 1; i >= 0; --i) {
+            idx += indices[i] * stride;
+            stride *= shape[i];
+        }
+        return data[idx];
+    }
+
+    // Padding con ceros (Solo para tensores 4D)
+    Tensor pad(int pad) const {
+        if (pad == 0) return *this;
+
+        if (shape.size() != 4)
+            throw std::runtime_error("pad solo soporta tensores 4D");
+
+        int N = shape[0], C = shape[1], H = shape[2], W = shape[3];
+        int H_pad = H + 2 * pad;
+        int W_pad = W + 2 * pad;
+
+        Tensor result({N, C, H_pad, W_pad});
+
+        #pragma omp parallel for collapse(4)
+        for (int n = 0; n < N; ++n)
+            for (int c = 0; c < C; ++c)
+                for (int h = 0; h < H; ++h)
+                    for (int w = 0; w < W; ++w)
+                        result.at(n, c, h + pad, w + pad) = at(n, c, h, w);
+
+        return result;
+    }
+
+    // Quitar padding (Solo para tensores 4D)
+    Tensor unpad(int pad) const {
+        if (pad == 0) return *this;
+
+        if (shape.size() != 4)
+            throw std::runtime_error("unpad solo soporta tensores 4D");
+
+        int N = shape[0], C = shape[1], H = shape[2] - 2 * pad, W = shape[3] - 2 * pad;
+
+        Tensor result({N, C, H, W});
+
+        #pragma omp parallel for collapse(4)
+        for (int n = 0; n < N; ++n)
+            for (int c = 0; c < C; ++c)
+                for (int h = 0; h < H; ++h)
+                    for (int w = 0; w < W; ++w)
+                        result.at(n, c, h, w) = at(n, c, h + pad, w + pad);
+
+        return result;
+    }
+
+    // Rellenar con un valor específico
+    void fill(float val) {
+        std::fill(data.begin(), data.end(), val);
+    }
+
+    // Crea tensor lleno de ceros
+    static Tensor zeros(const std::vector<int>& shape_) {
+        int total = std::accumulate(shape_.begin(), shape_.end(), 1, std::multiplies<>());
+        return Tensor(std::vector<float>(total, 0.0f), shape_);
+    }
+
+    Tensor operator*(float scalar) const {
+        std::vector<float> result_data(data.size());
+        for (size_t i = 0; i < data.size(); ++i)
+            result_data[i] = data[i] * scalar;
+        return Tensor(result_data, shape);
+    }
+
+    Tensor operator*(const Tensor& other) const {
+        if (shape != other.shape)
+            throw std::runtime_error("Shape mismatch in element-wise multiplication");
+        
+        std::vector<float> result_data(data.size());
+        for (size_t i = 0; i < data.size(); ++i)
+            result_data[i] = data[i] * other.data[i];
+        return Tensor(result_data, shape);
+    }
+
+   Tensor softmax(int axis = -1) const {
+    if (shape.size() == 2) {
+        int rows = shape[0], cols = shape[1];
+        Tensor result(shape);
+        for (int i = 0; i < rows; ++i) {
+            float max_val = -INFINITY;
+            for (int j = 0; j < cols; ++j)
+                max_val = std::max(max_val, at({i, j}));
+
+            float sum = 0.0f;
+            for (int j = 0; j < cols; ++j) {
+                float val = std::exp(at({i, j}) - max_val);
+                result.at({i, j}) = val;
+                sum += val;
+            }
+            for (int j = 0; j < cols; ++j)
+                result.at({i, j}) /= sum;
+        }
+        return result;
+    }
+
+    if (shape.size() == 3 && axis == -1) {
+        int B = shape[0], T = shape[1], D = shape[2];
+        Tensor result(shape);
+        for (int b = 0; b < B; ++b) {
+            for (int t = 0; t < T; ++t) {
+                float max_val = -INFINITY;
+                for (int d = 0; d < D; ++d)
+                    max_val = std::max(max_val, at({b, t, d}));
+
+                float sum = 0.0f;
+                for (int d = 0; d < D; ++d) {
+                    float val = std::exp(at({b, t, d}) - max_val);
+                    result.at({b, t, d}) = val;
+                    sum += val;
+                }
+                for (int d = 0; d < D; ++d)
+                    result.at({b, t, d}) /= sum;
+            }
+        }
+        return result;
+    }
+
+    if (shape.size() == 4) {
+        int B = shape[0], H = shape[1], T = shape[2], D = shape[3];
+        Tensor result(shape);
+        for (int b = 0; b < B; ++b) {
+            for (int h = 0; h < H; ++h) {
+                for (int t = 0; t < T; ++t) {
+                    float max_val = -INFINITY;
+                    for (int d = 0; d < D; ++d)
+                        max_val = std::max(max_val, at({b, h, t, d}));
+
+                    float sum = 0.0f;
+                    for (int d = 0; d < D; ++d) {
+                        float val = std::exp(at({b, h, t, d}) - max_val);
+                        result.at({b, h, t, d}) = val;
+                        sum += val;
+                    }
+                    for (int d = 0; d < D; ++d)
+                        result.at({b, h, t, d}) /= sum;
+                }
+            }
+        }
+        return result;
+    }
+
+    throw std::runtime_error("Softmax solo implementado para tensores 2D, 3D o 4D (axis=-1), recibí shape: " + shape_str());
+}
+
+
+    Tensor reshape(const std::vector<int>& new_shape) const {
+        int new_total = std::accumulate(new_shape.begin(), new_shape.end(), 1, std::multiplies<int>());
+        if (new_total != static_cast<int>(data.size()))
+            throw std::runtime_error("reshape: total size mismatch");
+        return Tensor(data, new_shape);
+    }
+
+    Tensor transpose(const std::vector<int>& perm) const {
+        if (perm.size() != shape.size())
+            throw std::runtime_error("transpose: perm dimension mismatch");
+
+        std::vector<int> new_shape(shape.size());
+        for (size_t i = 0; i < perm.size(); ++i)
+            new_shape[i] = shape[perm[i]];
+
+        // Cálculo de strides
+        std::vector<int> old_strides(shape.size(), 1);
+        for (int i = shape.size() - 2; i >= 0; --i)
+            old_strides[i] = old_strides[i + 1] * shape[i + 1];
+
+        std::vector<int> new_strides(shape.size(), 1);
+        for (int i = shape.size() - 2; i >= 0; --i)
+            new_strides[i] = new_strides[i + 1] * new_shape[i + 1];
+
+        std::vector<float> new_data(data.size());
+
+        for (size_t idx = 0; idx < data.size(); ++idx) {
+            int old_idx = idx;
+            std::vector<int> old_indices(shape.size(), 0);
+            for (size_t i = 0; i < shape.size(); ++i) {
+                old_indices[i] = old_idx / old_strides[i];
+                old_idx %= old_strides[i];
+            }
+
+            std::vector<int> new_indices(shape.size());
+            for (size_t i = 0; i < shape.size(); ++i)
+                new_indices[i] = old_indices[perm[i]];
+
+            int new_flat_idx = 0;
+            for (size_t i = 0; i < new_shape.size(); ++i)
+                new_flat_idx += new_indices[i] * new_strides[i];
+
+            new_data[new_flat_idx] = data[idx];
+        }
+
+        return Tensor(new_data, new_shape);
+    }
+    
+    /*
+    Tensor transpose() const {
+        if (shape.size() < 2)
+            throw std::runtime_error("Transpose requires at least 2D tensor");
+        return transpose(shape.size() - 2, shape.size() - 1);
+    }
+    */
+    
+    Tensor transpose(int dim0 = -1, int dim1 = -1) const {
+        if (shape.size() < 2 || shape.size() > 4) {
+            throw std::runtime_error("Transpose supported for 2D, 3D, or 4D tensors only");
+        }
+
+        if (dim0 == -1 && dim1 == -1) {
+            dim0 = shape.size() - 2;
+            dim1 = shape.size() - 1;
+        }
+        if (dim0 < 0 || dim1 < 0 || dim0 >= (int)shape.size() || dim1 >= (int)shape.size() || dim0 == dim1) {
+            throw std::runtime_error("Invalid transpose dimensions");
+        }
+
+        std::vector<int> new_shape = shape;
+        std::swap(new_shape[dim0], new_shape[dim1]);
+        std::vector<float> new_data(size(), 0.0f);
+
+        if (shape.size() == 2) {
+            int rows = shape[0];
+            int cols = shape[1];
+
+            #pragma omp parallel for collapse(2)
+            for (int i = 0; i < rows; ++i) {
+                for (int j = 0; j < cols; ++j) {
+                    new_data[j * rows + i] = data[i * cols + j];
+                }
+            }
+
+        } else if (shape.size() == 3) {
+            int d0 = shape[0], d1 = shape[1], d2 = shape[2];
+
+            #pragma omp parallel for collapse(3)
+            for (int i = 0; i < d0; ++i) {
+                for (int j = 0; j < d1; ++j) {
+                    for (int k = 0; k < d2; ++k) {
+                        int old_idx = i * d1 * d2 + j * d2 + k;
+                        int new_idx;
+                        if (dim0 == 1 && dim1 == 2) {
+                            new_idx = i * d2 * d1 + k * d1 + j;
+                        } else if (dim0 == 0 && dim1 == 2) {
+                            new_idx = k * d1 * d0 + j * d0 + i;
+                        } else if (dim0 == 0 && dim1 == 1) {
+                            new_idx = j * d0 * d2 + i * d2 + k;
+                        } else {
+                            throw std::runtime_error("Unsupported transpose dims for 3D tensor");
+                        }
+                        new_data[new_idx] = data[old_idx];
+                    }
+                }
+            }
+
+        } else { // 4D
+            int d0 = shape[0], d1 = shape[1], d2 = shape[2], d3 = shape[3];
+
+            #pragma omp parallel for collapse(4)
+            for (int i = 0; i < d0; ++i) {
+                for (int j = 0; j < d1; ++j) {
+                    for (int k = 0; k < d2; ++k) {
+                        for (int l = 0; l < d3; ++l) {
+                            int old_idx = i * d1 * d2 * d3 + j * d2 * d3 + k * d3 + l;
+                            int new_idx;
+
+                            if (dim0 == 2 && dim1 == 3) {
+                                new_idx = i * d1 * d3 * d2 + j * d3 * d2 + l * d2 + k;
+                            } else if (dim0 == 1 && dim1 == 3) {
+                                new_idx = i * d3 * d2 * d1 + l * d2 * d1 + k * d1 + j;
+                            } else if (dim0 == 1 && dim1 == 2) {
+                                new_idx = i * d2 * d3 * d1 + k * d3 * d1 + l * d1 + j;
+                            } else {
+                                throw std::runtime_error("Unsupported transpose dimensions for 4D tensor");
+                            }
+                            new_data[new_idx] = data[old_idx];
+                        }
+                    }
+                }
+            }
+        }
+
+        return Tensor(new_data, new_shape);
+    }
+/*
+
+    Tensor transpose() const {
+        if (shape.size() != 2) {
+            throw std::runtime_error("Transpose only supported for 2D tensors");
+        }
+        std::vector<float> result_data(size());
+        for (int i = 0; i < shape[0]; ++i) {
+            for (int j = 0; j < shape[1]; ++j) {
+                result_data[j * shape[0] + i] = data[i * shape[1] + j];
+            }
+        }
+        return Tensor(result_data, {shape[1], shape[0]});
+    }
+    
+    // Transpose dos ejes específicos
+    Tensor transpose(int dim1, int dim2) const {
+        std::vector<int> perm(shape.size());
+        std::iota(perm.begin(), perm.end(), 0);
+        std::swap(perm[dim1], perm[dim2]);
+        return transpose(perm);
+    }
+*/
+    
+    Tensor dropout_mask(float drop_prob, std::mt19937& rng) const {
+        std::bernoulli_distribution dist(1.0 - drop_prob);
+        std::vector<float> mask_data(data.size());
+        for (size_t i = 0; i < data.size(); ++i)
+            mask_data[i] = dist(rng) ? 1.0f : 0.0f;
+        return Tensor(mask_data, shape);
+    }
+
+    Tensor operator+(float scalar) const {
+        std::vector<float> result_data(data.size());
+        for (size_t i = 0; i < data.size(); ++i)
+            result_data[i] = data[i] + scalar;
+        return Tensor(result_data, shape);
+    }
+
+    Tensor operator-(float scalar) const {
+        std::vector<float> result_data(data.size());
+        for (size_t i = 0; i < data.size(); ++i)
+            result_data[i] = data[i] - scalar;
+        return Tensor(result_data, shape);
+    }
+
+    Tensor operator/(float scalar) const {
+        if (scalar == 0.0f)
+            throw std::runtime_error("Division by zero in Tensor");
+        std::vector<float> result_data(data.size());
+        for (size_t i = 0; i < data.size(); ++i)
+            result_data[i] = data[i] / scalar;
+        return Tensor(result_data, shape);
+    }
+
+    std::string shape_str() const {
+        std::ostringstream oss;
+        oss << "(";
+        for (size_t i = 0; i < shape.size(); ++i) {
+            oss << shape[i];
+            if (i != shape.size() - 1)
+                oss << ", ";
+        }
+        oss << ")";
+        return oss.str();
+    }
+    void clear() {
+    data.clear();
+    shape.clear();
+}
+
+};
+
+// include/layers/Flatten.hpp
+#pragma once
+
+#include "core/Layer.hpp"
+#include <numeric>
+#include <stdexcept>
+
+
+// Flatten layer
+class Flatten : public Layer {
+public:
+    Flatten() {}
+
+    Tensor forward(const Tensor& input, bool training = false) override {
+        if (input.shape.size() < 2) {
+            throw std::runtime_error("Flatten expects at least 2D input tensor");
+        }
+        int batch_size = input.shape[0];
+        int flat_size = std::accumulate(input.shape.begin() + 1, input.shape.end(), 1, std::multiplies<int>());
+        input_cache = input;
+        return Tensor(input.data, {batch_size, flat_size});
+    }
+
+    Tensor backward(const Tensor& grad_output) override {
+        return Tensor(grad_output.data, input_cache.shape);
+    }
+
+    void update_weights(Optimizer* optimizer) override {
+        // No trainable parameters
+    }
+
+    size_t num_params() const override {
+        return 0;
+    }
+    void clear_cache() override {
+        input_cache.clear();
+    }
+private:
+    Tensor input_cache;
+};
+
+#pragma once
+
+#include "core/Layer.hpp"
+#include <limits>
+#include <stdexcept>
+#include <cmath>
+#include <omp.h>
+#include <vector>
+
+// MaxPooling layer
+class MaxPooling2D : public Layer {
+private:
+    int pool_size;
+    int stride;
+    Tensor input_cache;
+    std::vector<std::vector<int>> max_indices; // Store indices of max values for backward pass
+
+public:
+    MaxPooling2D(int size, int str) : pool_size(size), stride(str) {
+        if (size <= 0 || str <= 0) {
+            throw std::runtime_error("Invalid max pooling parameters");
+        }
+    }
+
+    Tensor forward(const Tensor& input, bool training = false) override {
+        if (input.shape.size() != 4) {
+            throw std::runtime_error("Invalid input shape for max pooling");
+        }
+
+        int batch_size = input.shape[0];
+        int channels = input.shape[1];
+        int in_height = input.shape[2];
+        int in_width = input.shape[3];
+
+        int out_height = (in_height - pool_size) / stride + 1;
+        int out_width = (in_width - pool_size) / stride + 1;
+        if (out_height <= 0 || out_width <= 0) {
+            throw std::runtime_error("Invalid output dimensions for max pooling");
+        }
+
+        input_cache = input;
+        max_indices.clear();
+        max_indices.resize(batch_size * channels * out_height * out_width);
+
+        std::vector<float> output_data(batch_size * channels * out_height * out_width);
+
+        #pragma omp parallel for collapse(4)
+        for (int n = 0; n < batch_size; ++n) {
+            for (int c = 0; c < channels; ++c) {
+                for (int h = 0; h < out_height; ++h) {
+                    for (int w = 0; w < out_width; ++w) {
+                        float max_val = -std::numeric_limits<float>::infinity();
+                        int max_idx = 0;
+                        for (int ph = 0; ph < pool_size; ++ph) {
+                            for (int pw = 0; pw < pool_size; ++pw) {
+                                int input_h = h * stride + ph;
+                                int input_w = w * stride + pw;
+                                if (input_h < in_height && input_w < in_width) {
+                                    float val = input.data[n * channels * in_height * in_width +
+                                        c * in_height * in_width + input_h * in_width + input_w];
+                                    if (val > max_val) {
+                                        max_val = val;
+                                        max_idx = ph * pool_size + pw;
+                                    }
+                                }
+                            }
+                        }
+                        int output_idx = n * channels * out_height * out_width +
+                                         c * out_height * out_width +
+                                         h * out_width + w;
+                        output_data[output_idx] = max_val;
+                        max_indices[output_idx] = std::vector<int>{
+                            n, c, h * stride + max_idx / pool_size, w * stride + max_idx % pool_size
+                        };
+                    }
+                }
+            }
+        }
+
+        return Tensor(output_data, {batch_size, channels, out_height, out_width});
+    }
+
+    Tensor backward(const Tensor& grad_output) override {
+        if (grad_output.shape[2] != (input_cache.shape[2] - pool_size) / stride + 1 ||
+            grad_output.shape[3] != (input_cache.shape[3] - pool_size) / stride + 1) {
+            throw std::runtime_error("Gradient shape mismatch in max pooling backward");
+        }
+
+        int batch_size = input_cache.shape[0];
+        int channels = input_cache.shape[1];
+        int in_height = input_cache.shape[2];
+        int in_width = input_cache.shape[3];
+        int out_height = grad_output.shape[2];
+        int out_width = grad_output.shape[3];
+
+        std::vector<float> grad_input_data(batch_size * channels * in_height * in_width, 0.0f);
+
+        #pragma omp parallel for collapse(3)
+        for (int n = 0; n < batch_size; ++n) {
+            for (int c = 0; c < channels; ++c) {
+                for (int h = 0; h < out_height; ++h) {
+                    for (int w = 0; w < out_width; ++w) {
+                        int output_idx = n * channels * out_height * out_width +
+                                         c * out_height * out_width +
+                                         h * out_width + w;
+
+                        const auto& max_pos = max_indices[output_idx];
+                        int input_h = max_pos[2];
+                        int input_w = max_pos[3];
+
+                        int idx = max_pos[0] * channels * in_height * in_width +
+                                  max_pos[1] * in_height * in_width +
+                                  input_h * in_width + input_w;
+
+                        #pragma omp atomic
+                        grad_input_data[idx] += grad_output.data[output_idx];
+                    }
+                }
+            }
+        }
+
+        return Tensor(grad_input_data, input_cache.shape);
+    }
+
+    void update_weights(Optimizer* optimizer) override {
+        // No trainable parameters
+    }
+
+    void clear_cache() override {
+        input_cache.clear();
+        max_indices.clear();
+    }
+
+    size_t num_params() const override {
+        return 0;
+    }
+};
+
+
+#pragma once
+
+#include "core/Layer.hpp"
+#include "optimizers/Optimizer.hpp"
+#include <random>
+#include <stdexcept>
+
+class Linear : public Layer {
+private:
+    Tensor W;                  // Pesos
+    Tensor b;                  // Bias
+    Tensor dW;                 // Gradiente de pesos
+    Tensor db;                 // Gradiente de bias
+
+    Tensor input_cache;        // X
+    Tensor net_cache;          // XW + b
+
+    std::mt19937 rng;
+
+    void initialize_weights(int in_features, int out_features) {
+        std::normal_distribution<float> dist(0.0f, std::sqrt(2.0f / in_features));
+        std::vector<float> w_data(in_features * out_features);
+        for (auto& w : w_data)
+            w = dist(rng);
+        W = Tensor(w_data, {in_features, out_features});
+        b = Tensor(std::vector<float>(out_features, 0.0f), {out_features});
+    }
+
+public:
+    Linear(int in_features, int out_features)
+        : rng(std::random_device{}()) {
+        initialize_weights(in_features, out_features);
+    }
+
+    Tensor forward(const Tensor& input, bool training = false) override {
+        if (input.shape[1] != W.shape[0])
+            throw std::runtime_error("Dense: Input shape mismatch");
+
+        input_cache = input;                                // Cache X
+        net_cache = input.matmul(W) + b;                    // Z = XW + b
+        return Tensor(std::move(net_cache));                // Retorna moviendo (sin copia)
+    }
+
+    Tensor backward(const Tensor& grad_output) override {
+        dW = input_cache.transpose().matmul(grad_output);   // dW = Xᵀ·dZ
+        db = grad_output.sum_rows();                        // db = sum over batch
+        return grad_output.matmul(W.transpose());           // dX = dZ·Wᵀ
+    }
+
+    void update_weights(Optimizer* optimizer) override {
+        optimizer->update(W, dW);
+        optimizer->update(b, db);
+
+        // Libera gradientes que ya no se usarán
+        dW.clear();
+        db.clear();
+    }
+
+    void clear_cache() override{
+        input_cache.clear();
+        net_cache.clear();
+        dW.clear();
+        db.clear();
+    }
+
+
+    size_t num_params() const override {
+        return W.total_elements() + b.total_elements();
+    }
+    const Tensor& get_net_cache() const {
+        return net_cache;
+    }
+
+    ~Linear() override = default;
+};
+#pragma once
+
+#include "core/Layer.hpp"
+#include "core/Initializer.hpp"
+#include "optimizers/Optimizer.hpp"
+#include <stdexcept>
+#include <random>
+
+// Dropout layer
+class Dropout : public Layer {
+private:
+    float dropout_rate;         // Probability of dropping a unit
+    Tensor mask;                // Dropout mask (solo durante entrenamiento)
+    std::mt19937 rng;
+
+public:
+    Dropout(float rate) : dropout_rate(rate), rng(std::random_device{}()) {
+        if (rate < 0.0f || rate >= 1.0f)
+            throw std::runtime_error("Dropout rate must be in [0, 1)");
+    }
+
+    Tensor forward(const Tensor& input, bool training = false) override {
+        const size_t N = input.data.size();
+
+        if (!training) {
+            // Durante evaluación, escalar por (1 - rate)
+            std::vector<float> scaled_data;
+            scaled_data.reserve(N);
+            float scale = 1.0f - dropout_rate;
+            for (float val : input.data)
+                scaled_data.push_back(val * scale);
+
+            return Tensor(std::move(scaled_data), input.shape);
+        }
+
+        // Durante entrenamiento, aplicar máscara de dropout invertido
+        std::vector<float> mask_data;
+        std::vector<float> dropped_data;
+        mask_data.reserve(N);
+        dropped_data.reserve(N);
+
+        std::bernoulli_distribution dist(1.0f - dropout_rate);
+        float scale = 1.0f / (1.0f - dropout_rate);
+
+        for (float val : input.data) {
+            float keep = dist(rng) ? scale : 0.0f;
+            mask_data.push_back(keep);
+            dropped_data.push_back(val * keep);
+        }
+
+        mask = Tensor(std::move(mask_data), input.shape);
+        return Tensor(std::move(dropped_data), input.shape);
+    }
+
+    Tensor backward(const Tensor& grad_output) override {
+        if (grad_output.shape != mask.shape)
+            throw std::runtime_error("Shape mismatch in Dropout::backward");
+
+        std::vector<float> grad_input;
+        grad_input.reserve(grad_output.data.size());
+
+        for (size_t i = 0; i < grad_output.data.size(); ++i)
+            grad_input.push_back(grad_output.data[i] * mask.data[i]);
+
+        return Tensor(std::move(grad_input), grad_output.shape);
+    }
+
+    void update_weights(Optimizer*) override {
+        // Dropout no tiene parámetros entrenables
+    }
+
+    size_t num_params() const override {
+        return 0;
+    }
+
+
+    ~Dropout() override = default;
+};
+
+// include/metrics/Metric.hpp
+#pragma once
+
+#include "Metric.hpp"
+#include <stdexcept>
+
+#include "core/Tensor.hpp"
+
+/* ------------------------------------------------------------------
+ * Utilidad común: precision, recall y f1 (forward declaration + body)
+ * ------------------------------------------------------------------*/
+inline float compute_precision_recall_f1(const Tensor& y_pred,
+                                         const Tensor& y_true,
+                                         const std::string& mode);
+
+// Metric base class
+class Metric {
+public:
+    virtual float compute(const Tensor& y_pred, const Tensor& y_true) = 0;
+    virtual std::string name() const = 0;
+    virtual ~Metric() {}
+};
+
+// Accuracy metric
+class Accuracy : public Metric {
+public:
+    float compute(const Tensor& y_pred, const Tensor& y_true) override {
+        if (y_pred.shape != (y_true.shape)) {
+            throw std::runtime_error("Shape mismatch in accuracy computation");
+        }
+        int batch_size = y_pred.shape[0];
+        int num_classes = y_pred.shape[1];
+        int correct = 0;
+
+        for (int i = 0; i < batch_size; ++i) {
+            // Find predicted and true class
+            int pred_class = 0;
+            int true_class = 0;
+            float max_pred = y_pred.data[i * num_classes];
+            float max_true = y_true.data[i * num_classes];
+
+            for (int j = 1; j < num_classes; ++j) {
+                int idx = i * num_classes + j;
+                if (y_pred.data[idx] > max_pred) {
+                    max_pred = y_pred.data[idx];
+                    pred_class = j;
+                }
+                if (y_true.data[idx] > max_true) {
+                    max_true = y_true.data[idx];
+                    true_class = j;
+                }
+            }
+            if (pred_class == true_class) {
+                ++correct;
+            }
+        }
+        return static_cast<float>(correct) / batch_size;
+    }
+
+    std::string name() const override { return "accuracy"; }
+};
+
+// Precision
+class Precision : public Metric {
+public:
+    float compute(const Tensor& y_pred, const Tensor& y_true) override {
+        return compute_precision_recall_f1(y_pred, y_true, "precision");
+    }
+
+    std::string name() const override { return "precision"; }
+};
+
+// Recall
+class Recall : public Metric {
+public:
+    float compute(const Tensor& y_pred, const Tensor& y_true) override {
+        return compute_precision_recall_f1(y_pred, y_true, "recall");
+    }
+
+    std::string name() const override { return "recall"; }
+};
+
+// F1 Score
+class F1Score : public Metric {
+public:
+    float compute(const Tensor& y_pred, const Tensor& y_true) override {
+        return compute_precision_recall_f1(y_pred, y_true, "f1");
+    }
+
+    std::string name() const override { return "f1"; }
+};
+
+// Utility function for precision, recall, f1
+inline float compute_precision_recall_f1(const Tensor& y_pred, const Tensor& y_true, const std::string& mode) {
+    if (y_pred.shape != y_true.shape) {
+        throw std::runtime_error("Shape mismatch in metric computation");
+    }
+
+    int batch_size = y_pred.shape[0];
+    int num_classes = y_pred.shape[1];
+
+    std::vector<int> true_labels(batch_size), pred_labels(batch_size);
+
+    for (int i = 0; i < batch_size; ++i) {
+        int pred_class = 0, true_class = 0;
+        float max_pred = y_pred.data[i * num_classes];
+        float max_true = y_true.data[i * num_classes];
+
+        for (int j = 1; j < num_classes; ++j) {
+            int idx = i * num_classes + j;
+            if (y_pred.data[idx] > max_pred) {
+                max_pred = y_pred.data[idx];
+                pred_class = j;
+            }
+            if (y_true.data[idx] > max_true) {
+                max_true = y_true.data[idx];
+                true_class = j;
+            }
+        }
+
+        pred_labels[i] = pred_class;
+        true_labels[i] = true_class;
+    }
+
+    int TP = 0, FP = 0, FN = 0;
+
+    for (int c = 0; c < num_classes; ++c) {
+        for (int i = 0; i < batch_size; ++i) {
+            bool pred_is_c = pred_labels[i] == c;
+            bool true_is_c = true_labels[i] == c;
+
+            if (pred_is_c && true_is_c) TP++;
+            else if (pred_is_c && !true_is_c) FP++;
+            else if (!pred_is_c && true_is_c) FN++;
+        }
+    }
+
+    float precision = (TP + FP > 0) ? static_cast<float>(TP) / (TP + FP) : 0.0f;
+    float recall    = (TP + FN > 0) ? static_cast<float>(TP) / (TP + FN) : 0.0f;
+    float f1        = (precision + recall > 0) ? 2 * precision * recall / (precision + recall) : 0.0f;
+
+    if (mode == "precision") return precision;
+    if (mode == "recall") return recall;
+    return f1;
+}
+
+#pragma once
+
+#include "NeuralNet.hpp"
+#include <memory>
+#include <iostream>
+
+// Construye un modelo de red neuronal convolucional (CNN)
+Model build_cnn_model() {
+    Model model;
+
+    // Primera capa convolucional: Entrada 28×28×3 → Salida 28×28×16
+    auto conv1 = std::make_shared<Conv2D>(3, 16, 3, PaddingType::CUSTOM, 1);
+    conv1->set_custom_padding(1);  // Padding personalizado para mantener dimensiones
+    model.add(conv1);
+    model.add(std::make_shared<ReLU>());  // Activación ReLU
+    model.add(std::make_shared<MaxPooling2D>(2, 2));  // Reducción de dimensiones: 28×28 → 14×14
+
+    // Segunda capa convolucional: Entrada 14×14×16 → Salida 14×14×4
+    auto conv2 = std::make_shared<Conv2D>(16, 4, 3, PaddingType::CUSTOM, 1);
+    conv2->set_custom_padding(1);  // Padding personalizado para mantener dimensiones
+    model.add(conv2);
+    model.add(std::make_shared<ReLU>());  // Activación ReLU
+    model.add(std::make_shared<MaxPooling2D>(2, 2));  // Reducción de dimensiones: 14×14 → 7×7
+
+    // Aplanamiento: Entrada 7×7×4 → Salida 3136 (vector plano)
+    model.add(std::make_shared<Flatten>());
+
+    // Capa totalmente conectada: Entrada 3136 → Salida 16
+    model.add(std::make_shared<Linear>(196, 16));
+    model.add(std::make_shared<ReLU>());  // Activación ReLU
+
+    // Capa de salida: Entrada 16 → Salida 10 (clases)
+    model.add(std::make_shared<Linear>(196, 10));
+    model.add(std::make_shared<Softmax>());  // Activación Softmax para clasificación
+
+    return model;
+}
+
+// Construye un modelo de red neuronal multicapa (MLP)
+Model build_mlp_model() {
+    Model model;
+
+    // Aplanamiento de entrada: Entrada 28×28×3 → Salida 2352 (vector plano)
+    model.add(std::make_shared<Flatten>());
+
+    // Primera capa totalmente conectada: Entrada 2352 → Salida 64
+    model.add(std::make_shared<Linear>(28 * 28 * 3, 64));
+    model.add(std::make_shared<Dropout>(0.25f));  // Dropout con probabilidad de 0.25
+    model.add(std::make_shared<ReLU>());  // Activación ReLU
+
+    // Segunda capa totalmente conectada: Entrada 64 → Salida 32
+    model.add(std::make_shared<Linear>(64, 32));
+    model.add(std::make_shared<Dropout>(0.25f));  // Dropout con probabilidad de 0.25
+    model.add(std::make_shared<ReLU>());  // Activación ReLU
+
+    // Capa de salida: Entrada 32 → Salida 10 (clases)
+    model.add(std::make_shared<Linear>(32, 10));
+    model.add(std::make_shared<Softmax>());  // Activación Softmax para clasificación
+
+    return model;
+}
+// include/optimizers/SGD.hpp
+#pragma once
+
+#include "Optimizer.hpp"
+
+
+// SGD Optimizer
+class SGD : public Optimizer {
+private:
+    float learning_rate;
+    float momentum;
+    std::vector<Tensor> velocity; // For momentum
+
+public:
+    SGD(float lr = 0.01f, float mom = 0.9f) : learning_rate(lr), momentum(mom) {}
+
+    void update(Tensor& param, const Tensor& grad) override {
+        if (param.shape != grad.shape) {
+            throw std::runtime_error("Shape mismatch in optimizer update");
+        }
+
+        // Initialize velocity if empty
+        if (velocity.empty() || velocity[0].shape != param.shape) {
+            velocity.clear();
+            velocity.emplace_back(std::vector<float>(param.size(), 0.0f), param.shape);
+        }
+
+        // Update with momentum
+        for (size_t i = 0; i < param.data.size(); ++i) {
+            velocity[0].data[i] = momentum * velocity[0].data[i] - learning_rate * grad.data[i];
+            param.data[i] += velocity[0].data[i];
+        }
+    }
+};
+
+#include "NeuralNet.hpp"
+#include <iostream>
+#include <memory>
+
+
+
+using namespace utils;
+
+int main() {
+    // Variables de inicialización
+    int num_train_samples = 60000;
+    int num_test_samples = 10000;
+    float val_ratio = 0.2f;
+    int num_epochs = 20;
+    int batch_size = 32;
+    float learning_rate = 0.002f;
+
+    // Load MNIST training dataset
+    MNISTLoader train_data("data/fashionmnist/train-images-idx3-ubyte",
+                           "data/fashionmnist/train-labels-idx1-ubyte", num_train_samples);
+    MNISTLoader test_data("data/fashionmnist/t10k-images-idx3-ubyte",
+                          "data/fashionmnist/t10k-labels-idx1-ubyte", num_test_samples);
+
+    // Replicar a 3 canales
+    replicate_channels(train_data.images, 3);
+    replicate_channels(test_data.images, 3);
+
+    // División train / val
+    Tensor X_train, y_train, X_val, y_val;
+    train_val_split(train_data.images, train_data.labels, val_ratio,
+                    X_train, y_train, X_val, y_val);
+
+    std::cout << "Train shape: ";
+    for (int d : X_train.shape) std::cout << d << " ";
+    std::cout << "\nValidation shape: ";
+    for (int d : X_val.shape) std::cout << d << " ";
+    std::cout << "\nTest shape: ";
+    for (int d : test_data.images.shape) std::cout << d << " ";
+    std::cout << std::endl;
+
+
+    // Elegir modelo CNN 
+    
+    std::cout << "Construyendo modelo CNN...\n";
+    Model cnn_model = build_cnn_model();
+
+    // Mostrar resumen CNN
+    cnn_model.summary();
+    std::cout << "Modelo CNN:\n";
+
+    cnn_model.add_metric(std::make_shared<Accuracy>());
+    cnn_model.compile(
+        std::make_shared<CrossEntropyLoss>(),
+        std::make_shared<SGD>(learning_rate),
+        std::make_shared<Logger>("training_log_cnn.csv"));
+
+    cnn_model.fit(X_train, y_train, X_val, y_val, num_epochs, batch_size);
+    
+    std::cout << "Evaluación final CNN:\n";
+    cnn_model.evaluate(test_data.images, test_data.labels, batch_size);
+
+    // Elegir modelo MLP
+    std::cout << "Construyendo modelo MLP...\n";
+    Model mlp_model = build_mlp_model();
+
+
+    // Mostrar resumen MLP
+    mlp_model.summary();
+    std::cout << "Modelo MLP:\n";
+
+    mlp_model.add_metric(std::make_shared<Accuracy>());
+    mlp_model.compile(
+        std::make_shared<CrossEntropyLoss>(),
+        std::make_shared<SGD>(learning_rate),
+        std::make_shared<Logger>("training_log_mlp.csv"));
+
+    mlp_model.fit(X_train, y_train, X_val, y_val, num_epochs, batch_size);
+    
+    std::cout << "Evaluación final MLP:\n";
+    mlp_model.evaluate(test_data.images, test_data.labels, batch_size);
+}

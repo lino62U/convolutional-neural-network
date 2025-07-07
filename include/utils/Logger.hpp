@@ -3,56 +3,87 @@
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <vector>
 #include <iomanip>
+#include <filesystem>
 
 class Logger {
 private:
-    std::ofstream log_file;
+    std::ofstream file;
+    std::string log_path;
     bool header_written = false;
 
 public:
-    Logger(const std::string& filename) {
-        log_file.open(filename, std::ios::out);
-        if (!log_file.is_open()) {
-            throw std::runtime_error("No se pudo abrir el archivo de log.");
+    Logger(const std::string& path = "training_log.csv") : log_path(path) {
+        auto dir = std::filesystem::path(path).parent_path();
+        if (!dir.empty()) {
+            std::filesystem::create_directories(dir);
+        }
+
+        file.open(log_path, std::ios::out);
+        if (!file.is_open()) {
+            throw std::runtime_error("Failed to open log file: " + log_path);
         }
     }
 
-    void log_epoch(int epoch, float loss, float acc, float val_loss = -1.0f, float val_acc = -1.0f) {
+
+    void log_epoch(int epoch, int total_epochs,
+               float train_loss, const std::vector<std::pair<std::string, float>>& train_metrics,
+               float val_loss, const std::vector<std::pair<std::string, float>>& val_metrics) {
+        std::ostringstream oss;
+
+        // --- Consola: formato elegante
+        oss << "[Epoch " << epoch << "/" << total_epochs << "]"
+            << " | Train Loss: " << std::fixed << std::setprecision(6) << train_loss;
+
+        for (const auto& m : train_metrics) {
+            oss << " | Train " << capitalize(m.first) << ": " << std::fixed << std::setprecision(6) << m.second;
+        }
+
+        oss << " | Val Loss: " << std::fixed << std::setprecision(6) << val_loss;
+
+        for (const auto& m : val_metrics) {
+            oss << " | Val " << capitalize(m.first) << ": " << std::fixed << std::setprecision(6) << m.second;
+        }
+
+        std::cout << oss.str() << std::endl;
+
+        // --- CSV (igual que antes)
         if (!header_written) {
-            log_file << "epoch,train_loss,train_accuracy";
-            if (val_loss >= 0 && val_acc >= 0)
-                log_file << ",val_loss,val_accuracy";
-            log_file << "\n";
+            file << "epoch,train_loss";
+            for (const auto& m : train_metrics) file << ",train_" << m.first;
+            file << ",val_loss";
+            for (const auto& m : val_metrics) file << ",val_" << m.first;
+            file << std::endl;
             header_written = true;
         }
 
-        log_file << epoch << ","
-                 << std::fixed << std::setprecision(6) << loss << ","
-                 << acc;
-        if (val_loss >= 0 && val_acc >= 0) {
-            log_file << "," << val_loss << "," << val_acc;
-        }
-        log_file << "\n";
-
-        std::cout << "Epoch " << epoch
-                  << " - Loss: " << loss
-                  << " - Accuracy: " << acc;
-        if (val_loss >= 0 && val_acc >= 0) {
-            std::cout << " - Val Loss: " << val_loss
-                      << " - Val Accuracy: " << val_acc;
-        }
-        std::cout << std::endl;
+        file << epoch << "," << train_loss;
+        for (const auto& m : train_metrics) file << "," << m.second;
+        file << "," << val_loss;
+        for (const auto& m : val_metrics) file << "," << m.second;
+        file << std::endl;
     }
 
-    void info(const std::string& message) {
-        log_file << "# " << message << std::endl;
-        std::cout << "[INFO] " << message << std::endl;
+    void log_eval(float eval_loss, const std::vector<std::pair<std::string, float>>& val_metrics) {
+        std::ostringstream oss;
+        oss << "[Evaluation] | Val Loss: " << std::fixed << std::setprecision(6) << eval_loss;
+        for (const auto& m : val_metrics) {
+            oss << " | Val " << capitalize(m.first) << ": " << std::fixed << std::setprecision(6) << m.second;
+        }
+        std::cout << oss.str() << std::endl;
+    }
+
+    std::string capitalize(const std::string& s) {
+        if (s.empty()) return s;
+        std::string out = s;
+        out[0] = std::toupper(out[0]);
+        return out;
     }
 
     ~Logger() {
-        if (log_file.is_open()) {
-            log_file.close();
-        }
+        if (file.is_open()) file.close();
     }
 };
+
+

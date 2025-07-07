@@ -10,16 +10,21 @@
 #include "optimizers/Optimizer.hpp"
 #include "metrics/Metric.hpp"
 #include "utils/Logger.hpp"  // Asegúrate de tener esta clase implementada
+#include <random>
 
+
+// Model class
 class Model {
 private:
     std::vector<std::shared_ptr<Layer>> layers;
     std::shared_ptr<Loss> loss;
     std::shared_ptr<Optimizer> optimizer;
     std::vector<std::shared_ptr<Metric>> metrics;
-    std::shared_ptr<Logger> logger;  // Nuevo
+    std::shared_ptr<Logger> logger;
+    bool training_mode;
 
 public:
+    Model() : training_mode(false) {}
 
     size_t num_params() const {
         return std::accumulate(layers.begin(), layers.end(), size_t(0),
@@ -32,240 +37,228 @@ public:
         layers.push_back(layer);
     }
 
+    void add_metric(std::shared_ptr<Metric> metric) {
+        metrics.push_back(metric);
+    }
+
+    const std::vector<std::shared_ptr<Layer>>& get_layers() const {
+        return layers;
+    }
+
     void compile(std::shared_ptr<Loss> loss_fn, std::shared_ptr<Optimizer> opt,
-                 std::vector<std::shared_ptr<Metric>> metric_list = {},
                  std::shared_ptr<Logger> log = nullptr) {
         loss = loss_fn;
         optimizer = opt;
-        metrics = metric_list;
         logger = log;
     }
 
-    void debug_pipeline_demo(const Tensor& input) {
-        Tensor current = input;
-
-        std::cout << "📥 Entrada:\n";
-        current.print_shape();
-        current.print_matrix();
-
+    void summary() const {
+        std::cout << "🧠 Modelo resumen:\n";
+        std::cout << " - Número total de parámetros: " << num_params() << "\n";
+        std::cout << " - Capas (" << layers.size() << "):\n";
         for (size_t i = 0; i < layers.size(); ++i) {
-            std::cout << "\n➡️ Paso por capa " << i << ": " << typeid(*layers[i]).name() << "\n";
-            current = layers[i]->forward(current);
-            current.print_shape();
-            current.print_matrix();
-        }
-
-        std::cout << "\n✅ Resultado final\n";
-        current.print_shape();
-        current.print_matrix();
-    }
-
-
-
-
-     void fit(const Tensor& X, const Tensor& y, int epochs, int batch_size,
-             const Tensor* X_val = nullptr, const Tensor* y_val = nullptr) {
-
-        int num_samples = X.shape[0];
-
-        for (int epoch = 0; epoch < epochs; ++epoch) {
-            float total_loss = 0.0f;
-            std::vector<float> total_metrics(metrics.size(), 0.0f);
-            int batches = 0;
-
-            for (int i = 0; i < num_samples; i += batch_size) {
-                int end = std::min(i + batch_size, num_samples);
-
-                Tensor X_batch = X.slice(i, end);
-                Tensor y_batch = y.slice(i, end);
-
-                // --- Forward ---
-                Tensor out = X_batch;
-                for (auto& layer : layers)
-                    out = layer->forward(out);
-
-                float loss_value = loss->compute(out, y_batch);
-                total_loss += loss_value;
-
-                for (size_t m = 0; m < metrics.size(); ++m)
-                    total_metrics[m] += metrics[m]->compute(y_batch, out);
-
-                batches++;
-
-                // --- Backward ---
-                Tensor grad = loss->gradient(out, y_batch);
-                for (auto it = layers.rbegin(); it != layers.rend(); ++it)
-                    grad = (*it)->backward(grad);
-
-                // --- Update ---
-                for (auto& layer : layers)
-                    layer->update_weights(optimizer.get());
-            }
-
-            // Promedios de entrenamiento
-            float avg_loss = total_loss / batches;
-            std::vector<float> avg_metrics;
-            for (float val : total_metrics)
-                avg_metrics.push_back(val / batches);
-
-            // Validación
-            float val_loss = -1.0f;
-            std::vector<float> val_metrics(metrics.size(), -1.0f);
-
-            if (X_val && y_val) {
-                Tensor val_out = *X_val;
-                for (auto& layer : layers)
-                    val_out = layer->forward(val_out);
-
-                val_loss = loss->compute(val_out, *y_val);
-
-                for (size_t m = 0; m < metrics.size(); ++m)
-                    val_metrics[m] = metrics[m]->compute(*y_val, val_out);
-            }
-
-            // Logging
-            if (logger) {
-                logger->log_epoch(epoch + 1, avg_loss, avg_metrics.empty() ? -1.0f : avg_metrics[0],
-                  val_loss, val_metrics.empty() ? -1.0f : val_metrics[0]);
-
-
-            } else {
-                std::cout << "Epoch " << epoch + 1 << "/" << epochs
-                          << " - Loss: " << avg_loss;
-                for (size_t m = 0; m < metrics.size(); ++m)
-                    std::cout << " - " << typeid(*metrics[m]).name() << ": " << avg_metrics[m];
-                if (X_val && y_val) {
-                    std::cout << " - Val Loss: " << val_loss;
-                    for (size_t m = 0; m < metrics.size(); ++m)
-                        std::cout << " - Val " << typeid(*metrics[m]).name() << ": " << val_metrics[m];
-                }
-                std::cout << std::endl;
-            }
+            std::cout << "   [" << i << "] " << typeid(*layers[i]).name() << "\n";
         }
     }
 
-    void fit2(const Tensor& X, const Tensor& y, int epochs, int batch_size,
-         const Tensor* X_val = nullptr, const Tensor* y_val = nullptr) {
 
-        int num_samples = X.shape[0];
+    Tensor forward(const Tensor& input, bool training = false) {
+        Tensor current = input;
+        for (auto& layer : layers) {
+            current = layer->forward(current, training);
+        }
+        return current;
+    }
+
+    void evaluate(const Tensor& X, const Tensor& y, int batch_size = 32) {
+        if (X.shape[0] != y.shape[0]) {
+            throw std::runtime_error("Input and target shape mismatch in evaluation");
+        }
+
+        float eval_loss = 0.0f;
+        std::vector<float> eval_metrics(metrics.size(), 0.0f);
+        int num_batches = (X.shape[0] + batch_size - 1) / batch_size;
+
+        training_mode = false; // Set to evaluation mode
+
+        for (int b = 0; b < num_batches; ++b) {
+            // Create batch
+            int start = b * batch_size;
+            int end = std::min(start + batch_size, X.shape[0]);
+            int current_batch_size = end - start;
+            
+            // Extract batch data
+            std::vector<float> batch_data;
+            for (int i = start; i < end; ++i) {
+                for (int j = 0; j < X.total_elements() / X.shape[0]; ++j) {
+                    batch_data.push_back(X.data[i * (X.total_elements() / X.shape[0]) + j]);
+                }
+            }
+            std::vector<float> batch_target;
+            for (int i = start; i < end; ++i) {
+                for (int j = 0; j < y.shape[1]; ++j) {
+                    batch_target.push_back(y.data[i * y.shape[1] + j]);
+                }
+            }
+
+            // Create batch tensors with correct shapes
+            Tensor X_batch(batch_data, {current_batch_size, X.shape[1], X.shape[2], X.shape[3]});
+            Tensor y_batch(batch_target, {current_batch_size, y.shape[1]});
+
+            // Forward pass
+            Tensor y_pred = forward(X_batch, false);
+            // 🔥 Liberar caché
+            for (auto& layer : layers) {
+                layer->clear_cache();
+            }
+
+
+            // Compute loss
+            eval_loss += loss->compute(y_pred, y_batch);
+
+            // Compute metrics
+            for (size_t m = 0; m < metrics.size(); ++m) {
+                eval_metrics[m] += metrics[m]->compute(y_pred, y_batch);
+            }
+        }
+
+        // Average metrics over batches
+        eval_loss /= num_batches;
+        for (float& m : eval_metrics) {
+            m /= num_batches;
+        }
+
+        // Log evaluation results
+        if (logger) {
+            std::vector<std::pair<std::string, float>> val_metrics_vec;
+            for (size_t m = 0; m < metrics.size(); ++m) {
+                val_metrics_vec.emplace_back(metrics[m]->name(), eval_metrics[m]);
+            }
+            logger->log_eval(eval_loss, val_metrics_vec);
+        }
+    }
+
+    void fit(const Tensor& X, const Tensor& y, const Tensor& X_val, const Tensor& y_val, int epochs, int batch_size = 32) {
+        if (X.shape[0] != y.shape[0]) {
+            throw std::runtime_error("Input and target shape mismatch in training");
+        }
+        if (X_val.shape[0] != y_val.shape[0]) {
+            throw std::runtime_error("Input and target shape mismatch in test set");
+        }
+
+        std::vector<int> indices(X.shape[0]);
+        std::iota(indices.begin(), indices.end(), 0);
+        std::mt19937 rng(std::random_device{}());
 
         for (int epoch = 0; epoch < epochs; ++epoch) {
-            std::cout << "\n🔁 Epoch " << (epoch + 1) << "/" << epochs << std::endl;
-            float total_loss = 0.0f;
-            std::vector<float> total_metrics(metrics.size(), 0.0f);
-            int batches = 0;
+            std::shuffle(indices.begin(), indices.end(), rng);
+            
+            float epoch_loss = 0.0f;
+            std::vector<float> epoch_metrics(metrics.size(), 0.0f);
+            int num_batches = (X.shape[0] + batch_size - 1) / batch_size;
 
-            for (int i = 0; i < num_samples; i += batch_size) {
-                std::cout << "  📦 Procesando batch desde índice " << i << std::endl;
+            training_mode = true; // Set to training mode
 
-                int end = std::min(i + batch_size, num_samples);
-                Tensor X_batch = X.slice(i, end);
-                Tensor y_batch = y.slice(i, end);
-
-                // --- Forward ---
-                std::cout << "    ➡️  Forward..." << std::endl;
-                Tensor out = X_batch;
-                for (size_t l = 0; l < layers.size(); ++l) {
-                    std::cout << "      🔹 Layer " << l << ": " << typeid(*layers[l]).name() << std::endl;
-                    out = layers[l]->forward(out);
+//            std::cout << "\n📦 Época " << epoch + 1 << "/" << epochs << "\n";
+            for (int b = 0; b < num_batches; ++b) {
+                // Create batch
+                int start = b * batch_size;
+                int end = std::min(start + batch_size, X.shape[0]);
+                int current_batch_size = end - start;
+                
+                // Extract batch data
+                std::vector<float> batch_data;
+                for (int i = start; i < end; ++i) {
+                    int idx = indices[i];
+                    for (int j = 0; j < X.total_elements() / X.shape[0]; ++j) {
+                        batch_data.push_back(X.data[idx * (X.total_elements() / X.shape[0]) + j]);
+                    }
                 }
-                std::cout << "    ✅ Forward terminado" << std::endl;
+                std::vector<float> batch_target;
+                for (int i = start; i < end; ++i) {
+                    int idx = indices[i];
+                    for (int j = 0; j < y.shape[1]; ++j) {
+                        batch_target.push_back(y.data[idx * y.shape[1] + j]);
+                    }
+                }
 
-                // --- Loss ---
-                std::cout << "    📉 Calculando pérdida..." << std::endl;
-                float loss_value = loss->compute(out, y_batch);
-                total_loss += loss_value;
-                std::cout << "    ✅ Pérdida: " << loss_value << std::endl;
+                // Create batch tensors with correct shapes
+                Tensor X_batch(batch_data, {current_batch_size, X.shape[1], X.shape[2], X.shape[3]});
+                Tensor y_batch(batch_target, {current_batch_size, y.shape[1]});
 
-                // --- Métricas ---
+                // Forward pass
+                Tensor y_pred = forward(X_batch, true);
+
+                // Compute loss
+                float batch_loss = loss->compute(y_pred, y_batch);
+                epoch_loss += batch_loss;
+
+                // Compute metrics
                 for (size_t m = 0; m < metrics.size(); ++m) {
-                    float metric_val = metrics[m]->compute(y_batch, out);
-                    total_metrics[m] += metric_val;
-                    std::cout << "    📊 Métrica[" << m << "]: " << metric_val << std::endl;
+                    epoch_metrics[m] += metrics[m]->compute(y_pred, y_batch);
                 }
 
-                batches++;
-
-                // --- Backward ---
-                std::cout << "    🔁 Backward..." << std::endl;
-                Tensor grad = loss->gradient(out, y_batch);
+                // Backward pass
+                Tensor grad = loss->gradient(y_pred, y_batch);
                 for (auto it = layers.rbegin(); it != layers.rend(); ++it) {
                     grad = (*it)->backward(grad);
                 }
-                std::cout << "    ✅ Backward terminado" << std::endl;
 
-                // --- Update ---
-                std::cout << "    🛠️  Actualizando pesos..." << std::endl;
+                // Update weights
                 for (auto& layer : layers) {
                     layer->update_weights(optimizer.get());
                 }
-                std::cout << "    ✅ Pesos actualizados" << std::endl;
-            }
 
-            float avg_loss = total_loss / batches;
-            std::vector<float> avg_metrics;
-            for (float val : total_metrics)
-                avg_metrics.push_back(val / batches);
-
-            // --- Validación ---
-            float val_loss = -1.0f;
-            std::vector<float> val_metrics(metrics.size(), -1.0f);
-
-            if (X_val && y_val) {
-                std::cout << "  🧪 Evaluando en datos de validación..." << std::endl;
-                Tensor val_out = *X_val;
-                for (auto& layer : layers)
-                    val_out = layer->forward(val_out);
-
-                val_loss = loss->compute(val_out, *y_val);
-                for (size_t m = 0; m < metrics.size(); ++m)
-                    val_metrics[m] = metrics[m]->compute(*y_val, val_out);
-
-                std::cout << "  ✅ Val loss: " << val_loss << std::endl;
-                for (size_t m = 0; m < metrics.size(); ++m)
-                    std::cout << "  📊 Val Métrica[" << m << "]: " << val_metrics[m] << std::endl;
-            }
-
-            // --- Logging final de la época ---
-            if (logger) {
-                logger->log_epoch(epoch + 1, avg_loss,
-                                avg_metrics.empty() ? -1.0f : avg_metrics[0],
-                                val_loss,
-                                val_metrics.empty() ? -1.0f : val_metrics[0]);
-            } else {
-                std::cout << "📈 Epoch " << epoch + 1 << "/" << epochs
-                        << " - Loss: " << avg_loss;
-                for (size_t m = 0; m < metrics.size(); ++m)
-                    std::cout << " - " << typeid(*metrics[m]).name() << ": " << avg_metrics[m];
-                if (X_val && y_val) {
-                    std::cout << " - Val Loss: " << val_loss;
-                    for (size_t m = 0; m < metrics.size(); ++m)
-                        std::cout << " - Val " << typeid(*metrics[m]).name() << ": " << val_metrics[m];
+                // 🔥 Clear caches después del backward y update
+                for (auto& layer : layers) {
+                    layer->clear_cache();
                 }
-                std::cout << std::endl;
             }
+
+            // Average metrics over batches
+            epoch_loss /= num_batches;
+            for (float& m : epoch_metrics) {
+                m /= num_batches;
+            }
+
+            // Evaluate on test set
+            float eval_loss = 0.0f;
+            std::vector<float> eval_metrics(metrics.size(), 0.0f);
+            {
+                training_mode = false;
+                Tensor y_pred = forward(X_val, false);
+                eval_loss = loss->compute(y_pred, y_val);
+
+                for (size_t m = 0; m < metrics.size(); ++m) {
+                    eval_metrics[m] = metrics[m]->compute(y_pred, y_val);
+                }
+            }
+            // Log training results
+            if (logger) {
+                std::vector<std::pair<std::string, float>> train_metrics_vec;
+                for (size_t m = 0; m < metrics.size(); ++m) {
+                    train_metrics_vec.emplace_back(metrics[m]->name(), epoch_metrics[m]);
+                }
+
+                std::vector<std::pair<std::string, float>> val_metrics_vec;
+                for (size_t m = 0; m < metrics.size(); ++m) {
+                    val_metrics_vec.emplace_back(metrics[m]->name(), eval_metrics[m]);
+                }
+
+                logger->log_epoch(epoch + 1, epochs,
+                                epoch_loss, train_metrics_vec,
+                                eval_loss, val_metrics_vec);
+            }
+
+            // Evaluate on test set
+            //evaluate(X_val, y_val, batch_size);
         }
     }
 
 
-    Tensor predict(const Tensor& X) {
-        Tensor out = X;
-        for (auto& layer : layers)
-            out = layer->forward(out);
-        return out;
-    }
 
-    float evaluate(const Tensor& X, const Tensor& y) {
-        Tensor out = X;
-        for (auto& layer : layers)
-            out = layer->forward(out);
 
-        float acc_total = 0.0f;
-        for (auto& metric : metrics) {
-            float acc = metric->compute(y, out);
-            std::cout << typeid(*metric).name() << ": " << acc << std::endl;
-            acc_total += acc;
-        }
-        return acc_total / metrics.size();
-    }
 };
+
+
+   
