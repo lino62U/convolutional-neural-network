@@ -31,4 +31,8 @@ public:
     size_t num_params() const override { return 0; }
 
     virtual ~Activation() = default;
+    void clear_cache() override {
+        input_cache.clear();
+    }
+
 };

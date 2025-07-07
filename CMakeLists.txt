@@ -5,6 +5,13 @@ project(NeuralNetFramework)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Habilita OpenMP
+find_package(OpenMP REQUIRED)
+if(OpenMP_CXX_FOUND)
+    message(STATUS "✅ OpenMP encontrado: habilitado")
+endif()
+
+
 # Incluir directorios de cabecera
 include_directories(include)
 

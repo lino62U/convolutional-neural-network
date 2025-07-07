@@ -14,4 +14,6 @@ public:
     virtual void update_weights(Optimizer* optimizer) = 0;
     virtual size_t num_params() const = 0;
     virtual ~Layer() {}
+    virtual void clear_cache(){}
+
 };

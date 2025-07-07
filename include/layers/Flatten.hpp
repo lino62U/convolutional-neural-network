@@ -32,7 +32,9 @@ public:
     size_t num_params() const override {
         return 0;
     }
-
+    void clear_cache() override {
+        input_cache.clear();
+    }
 private:
     Tensor input_cache;
 };

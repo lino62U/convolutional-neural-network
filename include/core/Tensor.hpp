@@ -9,6 +9,7 @@
 #include <random>
 #include <string>
 #include <sstream>
+#include <omp.h>
 // Tensor class
 
 class Tensor {
@@ -35,8 +36,7 @@ public:
     size_t total_elements() const {
         return std::accumulate(shape.begin(), shape.end(), 1, std::multiplies<int>());
     }
-
- Tensor matmul(const Tensor& other) const {
+Tensor matmul(const Tensor& other) const {
     // 2D x 2D => (M, K) x (K, N) = (M, N)
     if (shape.size() == 2 && other.shape.size() == 2) {
         int M = shape[0];
@@ -46,10 +46,17 @@ public:
             throw std::runtime_error("Shape mismatch in 2D matmul");
 
         std::vector<float> result_data(M * N, 0.0f);
-        for (int i = 0; i < M; ++i)
-            for (int k = 0; k < K; ++k)
-                for (int j = 0; j < N; ++j)
-                    result_data[i * N + j] += data[i * K + k] * other.data[k * N + j];
+
+        #pragma omp parallel for collapse(2)
+        for (int i = 0; i < M; ++i) {
+            for (int j = 0; j < N; ++j) {
+                float sum = 0.0f;
+                for (int k = 0; k < K; ++k) {
+                    sum += data[i * K + k] * other.data[k * N + j];
+                }
+                result_data[i * N + j] = sum;
+            }
+        }
 
         return Tensor(result_data, {M, N});
     }
@@ -65,12 +72,19 @@ public:
             throw std::runtime_error("Shape mismatch in 3D batched matmul");
 
         std::vector<float> result_data(B * M * N, 0.0f);
-        for (int b = 0; b < B; ++b)
-            for (int i = 0; i < M; ++i)
-                for (int k = 0; k < K; ++k)
-                    for (int j = 0; j < N; ++j)
-                        result_data[b * M * N + i * N + j] +=
-                            data[b * M * K + i * K + k] * other.data[b * K * N + k * N + j];
+
+        #pragma omp parallel for collapse(3)
+        for (int b = 0; b < B; ++b) {
+            for (int i = 0; i < M; ++i) {
+                for (int j = 0; j < N; ++j) {
+                    float sum = 0.0f;
+                    for (int k = 0; k < K; ++k) {
+                        sum += data[b * M * K + i * K + k] * other.data[b * K * N + k * N + j];
+                    }
+                    result_data[b * M * N + i * N + j] = sum;
+                }
+            }
+        }
 
         return Tensor(result_data, {B, M, N});
     }
@@ -86,12 +100,19 @@ public:
             throw std::runtime_error("Shape mismatch in 3D x 2D matmul");
 
         std::vector<float> result_data(B * M * N, 0.0f);
-        for (int b = 0; b < B; ++b)
-            for (int i = 0; i < M; ++i)
-                for (int k = 0; k < K; ++k)
-                    for (int j = 0; j < N; ++j)
-                        result_data[b * M * N + i * N + j] +=
-                            data[b * M * K + i * K + k] * other.data[k * N + j];
+
+        #pragma omp parallel for collapse(3)
+        for (int b = 0; b < B; ++b) {
+            for (int i = 0; i < M; ++i) {
+                for (int j = 0; j < N; ++j) {
+                    float sum = 0.0f;
+                    for (int k = 0; k < K; ++k) {
+                        sum += data[b * M * K + i * K + k] * other.data[k * N + j];
+                    }
+                    result_data[b * M * N + i * N + j] = sum;
+                }
+            }
+        }
 
         return Tensor(result_data, {B, M, N});
     }
@@ -289,6 +310,8 @@ Tensor operator+(const Tensor& other) const {
         int W_pad = W + 2 * pad;
 
         Tensor result({N, C, H_pad, W_pad});
+
+        #pragma omp parallel for collapse(4)
         for (int n = 0; n < N; ++n)
             for (int c = 0; c < C; ++c)
                 for (int h = 0; h < H; ++h)
@@ -306,7 +329,10 @@ Tensor operator+(const Tensor& other) const {
             throw std::runtime_error("unpad solo soporta tensores 4D");
 
         int N = shape[0], C = shape[1], H = shape[2] - 2 * pad, W = shape[3] - 2 * pad;
+
         Tensor result({N, C, H, W});
+
+        #pragma omp parallel for collapse(4)
         for (int n = 0; n < N; ++n)
             for (int c = 0; c < C; ++c)
                 for (int h = 0; h < H; ++h)
@@ -471,14 +497,12 @@ Tensor operator+(const Tensor& other) const {
     }
     */
     
-
-   Tensor transpose(int dim0 = -1, int dim1 = -1) const {
+    Tensor transpose(int dim0 = -1, int dim1 = -1) const {
         if (shape.size() < 2 || shape.size() > 4) {
             throw std::runtime_error("Transpose supported for 2D, 3D, or 4D tensors only");
         }
 
         if (dim0 == -1 && dim1 == -1) {
-            // Default: transpose last two dimensions
             dim0 = shape.size() - 2;
             dim1 = shape.size() - 1;
         }
@@ -493,15 +517,18 @@ Tensor operator+(const Tensor& other) const {
         if (shape.size() == 2) {
             int rows = shape[0];
             int cols = shape[1];
+
+            #pragma omp parallel for collapse(2)
             for (int i = 0; i < rows; ++i) {
                 for (int j = 0; j < cols; ++j) {
                     new_data[j * rows + i] = data[i * cols + j];
                 }
             }
+
         } else if (shape.size() == 3) {
-            int d0 = shape[0];
-            int d1 = shape[1];
-            int d2 = shape[2];
+            int d0 = shape[0], d1 = shape[1], d2 = shape[2];
+
+            #pragma omp parallel for collapse(3)
             for (int i = 0; i < d0; ++i) {
                 for (int j = 0; j < d1; ++j) {
                     for (int k = 0; k < d2; ++k) {
@@ -511,31 +538,34 @@ Tensor operator+(const Tensor& other) const {
                             new_idx = i * d2 * d1 + k * d1 + j;
                         } else if (dim0 == 0 && dim1 == 2) {
                             new_idx = k * d1 * d0 + j * d0 + i;
-                        } else { // dim0 == 0, dim1 == 1
+                        } else if (dim0 == 0 && dim1 == 1) {
                             new_idx = j * d0 * d2 + i * d2 + k;
+                        } else {
+                            throw std::runtime_error("Unsupported transpose dims for 3D tensor");
                         }
                         new_data[new_idx] = data[old_idx];
                     }
                 }
             }
+
         } else { // 4D
-            int d0 = shape[0];
-            int d1 = shape[1];
-            int d2 = shape[2];
-            int d3 = shape[3];
+            int d0 = shape[0], d1 = shape[1], d2 = shape[2], d3 = shape[3];
+
+            #pragma omp parallel for collapse(4)
             for (int i = 0; i < d0; ++i) {
                 for (int j = 0; j < d1; ++j) {
                     for (int k = 0; k < d2; ++k) {
                         for (int l = 0; l < d3; ++l) {
                             int old_idx = i * d1 * d2 * d3 + j * d2 * d3 + k * d3 + l;
                             int new_idx;
+
                             if (dim0 == 2 && dim1 == 3) {
                                 new_idx = i * d1 * d3 * d2 + j * d3 * d2 + l * d2 + k;
                             } else if (dim0 == 1 && dim1 == 3) {
                                 new_idx = i * d3 * d2 * d1 + l * d2 * d1 + k * d1 + j;
                             } else if (dim0 == 1 && dim1 == 2) {
                                 new_idx = i * d2 * d3 * d1 + k * d3 * d1 + l * d1 + j;
-                            } else { // Add other cases as needed
+                            } else {
                                 throw std::runtime_error("Unsupported transpose dimensions for 4D tensor");
                             }
                             new_data[new_idx] = data[old_idx];
@@ -544,6 +574,7 @@ Tensor operator+(const Tensor& other) const {
                 }
             }
         }
+
         return Tensor(new_data, new_shape);
     }
 /*
@@ -612,4 +643,9 @@ Tensor operator+(const Tensor& other) const {
         oss << ")";
         return oss.str();
     }
+    void clear() {
+    data.clear();
+    shape.clear();
+}
+
 };

@@ -8,10 +8,10 @@ using namespace utils;
 
 int main() {
     // Variables de inicialización
-    int num_train_samples = 1000;
-    int num_test_samples = 1000;
+    int num_train_samples = 60000;
+    int num_test_samples = 10000;
     float val_ratio = 0.2f;
-    int num_epochs = 5;
+    int num_epochs = 20;
     int batch_size = 32;
     float learning_rate = 0.002f;
 
@@ -38,55 +38,44 @@ int main() {
     for (int d : test_data.images.shape) std::cout << d << " ";
     std::cout << std::endl;
 
-    std::cout << " Construyendo modelo CNN...\n";
-    Model model;
 
-    // 28×28×3 → 28×28×16
-    auto conv1 = std::make_shared<Conv2D>(
-        3, 16, 3, PaddingType::CUSTOM, 1);
-    conv1->set_custom_padding(1); // padding = 1
-    model.add(conv1);
-    model.add(std::make_shared<ReLU>());
-    // 28×28×16 → 14×14×16
-    model.add(std::make_shared<MaxPooling2D>(2, 2));
+    // Elegir modelo CNN 
+    
+    std::cout << "Construyendo modelo CNN...\n";
+    Model cnn_model = build_cnn_model();
 
-    // 14×14×16 → 14×14×64
-    auto conv2 = std::make_shared<Conv2D>(
-        16, 64, 3, PaddingType::CUSTOM, 1);
-    conv2->set_custom_padding(1); // padding = 1
-    model.add(conv2);
+    // Mostrar resumen CNN
+    cnn_model.summary();
+    std::cout << "Modelo CNN:\n";
 
-    model.add(std::make_shared<ReLU>());
-
-    // 14×14×64 → 7×7×64
-    model.add(std::make_shared<MaxPooling2D>(2, 2));
-
-    // 7×7×64 → 3136
-    model.add(std::make_shared<Flatten>());
-
-    // 3136 → 10 (clases) (Capa densa)
-    model.add(std::make_shared<Linear>(3136, 10));
-    model.add(std::make_shared<Softmax>());
-
-    // Resumen
-    std::cout << "Modelo:\n";
-    std::cout << " - Parámetros: " << model.num_params() << "\n";
-    std::cout << " - Capas:\n";
-    for (const auto& layer : model.get_layers())
-        std::cout << "   - " << typeid(*layer).name() << "\n";
-
-    // Métricas
-    model.add_metric(std::make_shared<Accuracy>());
-
-    // Compilar
-    model.compile(
+    cnn_model.add_metric(std::make_shared<Accuracy>());
+    cnn_model.compile(
         std::make_shared<CrossEntropyLoss>(),
         std::make_shared<SGD>(learning_rate),
-        std::make_shared<Logger>());
+        std::make_shared<Logger>("training_log_cnn.csv"));
 
-    // Entrenar
-    model.fit(X_train, y_train, X_val, y_val, num_epochs, batch_size);
+    cnn_model.fit(X_train, y_train, X_val, y_val, num_epochs, batch_size);
+    
+    std::cout << "Evaluación final CNN:\n";
+    cnn_model.evaluate(test_data.images, test_data.labels, batch_size);
 
-    // Evaluar
-    model.evaluate(test_data.images, test_data.labels, batch_size);
+    // Elegir modelo MLP
+    std::cout << "Construyendo modelo MLP...\n";
+    Model mlp_model = build_mlp_model();
+
+
+    // Mostrar resumen MLP
+    mlp_model.summary();
+    std::cout << "Modelo MLP:\n";
+
+    mlp_model.add_metric(std::make_shared<Accuracy>());
+    mlp_model.compile(
+        std::make_shared<CrossEntropyLoss>(),
+        std::make_shared<SGD>(learning_rate),
+        std::make_shared<Logger>("training_log_mlp.csv"));
+
+    mlp_model.fit(X_train, y_train, X_val, y_val, num_epochs, batch_size);
+    
+    std::cout << "Evaluación final MLP:\n";
+    mlp_model.evaluate(test_data.images, test_data.labels, batch_size);
 }

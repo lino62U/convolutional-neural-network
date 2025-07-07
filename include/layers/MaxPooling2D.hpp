@@ -4,7 +4,8 @@
 #include <limits>
 #include <stdexcept>
 #include <cmath>
-
+#include <omp.h>
+#include <vector>
 
 // MaxPooling layer
 class MaxPooling2D : public Layer {
@@ -31,7 +32,6 @@ public:
         int in_height = input.shape[2];
         int in_width = input.shape[3];
 
-        // Compute output dimensions
         int out_height = (in_height - pool_size) / stride + 1;
         int out_width = (in_width - pool_size) / stride + 1;
         if (out_height <= 0 || out_width <= 0) {
@@ -43,6 +43,8 @@ public:
         max_indices.resize(batch_size * channels * out_height * out_width);
 
         std::vector<float> output_data(batch_size * channels * out_height * out_width);
+
+        #pragma omp parallel for collapse(4)
         for (int n = 0; n < batch_size; ++n) {
             for (int c = 0; c < channels; ++c) {
                 for (int h = 0; h < out_height; ++h) {
@@ -63,9 +65,13 @@ public:
                                 }
                             }
                         }
-                        int output_idx = n * channels * out_height * out_width + c * out_height * out_width + h * out_width + w;
+                        int output_idx = n * channels * out_height * out_width +
+                                         c * out_height * out_width +
+                                         h * out_width + w;
                         output_data[output_idx] = max_val;
-                        max_indices[output_idx] = std::vector<int>{n, c, h * stride + max_idx / pool_size, w * stride + max_idx % pool_size};
+                        max_indices[output_idx] = std::vector<int>{
+                            n, c, h * stride + max_idx / pool_size, w * stride + max_idx % pool_size
+                        };
                     }
                 }
             }
@@ -88,17 +94,26 @@ public:
         int out_width = grad_output.shape[3];
 
         std::vector<float> grad_input_data(batch_size * channels * in_height * in_width, 0.0f);
+
+        #pragma omp parallel for collapse(3)
         for (int n = 0; n < batch_size; ++n) {
             for (int c = 0; c < channels; ++c) {
                 for (int h = 0; h < out_height; ++h) {
                     for (int w = 0; w < out_width; ++w) {
-                        int output_idx = n * channels * out_height * out_width + c * out_height * out_width + h * out_width + w;
+                        int output_idx = n * channels * out_height * out_width +
+                                         c * out_height * out_width +
+                                         h * out_width + w;
+
                         const auto& max_pos = max_indices[output_idx];
                         int input_h = max_pos[2];
                         int input_w = max_pos[3];
-                        grad_input_data[max_pos[0] * channels * in_height * in_width +
-                                       max_pos[1] * in_height * in_width + input_h * in_width + input_w] +=
-                            grad_output.data[output_idx];
+
+                        int idx = max_pos[0] * channels * in_height * in_width +
+                                  max_pos[1] * in_height * in_width +
+                                  input_h * in_width + input_w;
+
+                        #pragma omp atomic
+                        grad_input_data[idx] += grad_output.data[output_idx];
                     }
                 }
             }
@@ -109,6 +124,11 @@ public:
 
     void update_weights(Optimizer* optimizer) override {
         // No trainable parameters
+    }
+
+    void clear_cache() override {
+        input_cache.clear();
+        max_indices.clear();
     }
 
     size_t num_params() const override {

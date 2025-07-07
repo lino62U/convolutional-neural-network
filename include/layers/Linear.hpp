@@ -50,7 +50,19 @@ public:
     void update_weights(Optimizer* optimizer) override {
         optimizer->update(W, dW);
         optimizer->update(b, db);
+
+        // Libera gradientes que ya no se usarán
+        dW.clear();
+        db.clear();
     }
+
+    void clear_cache() override{
+        input_cache.clear();
+        net_cache.clear();
+        dW.clear();
+        db.clear();
+    }
+
 
     size_t num_params() const override {
         return W.total_elements() + b.total_elements();

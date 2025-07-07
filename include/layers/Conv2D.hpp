@@ -7,7 +7,8 @@
 #include <algorithm>
 #include <string>
 #include <activations/Activation.hpp>
-
+#include <random>
+#include <omp.h>
 
 enum class PaddingType { VALID, SAME, CUSTOM };
 
@@ -59,7 +60,6 @@ public:
         const int Kw = filters.shape[3];
         const int F = filters.shape[0];
 
-        // Padding
         int pad = 0;
         if (padding_type == PaddingType::SAME)
             pad = ((H - 1) * stride + K - H) / 2;
@@ -80,6 +80,7 @@ public:
         const float* f_data = filters.data.data();
         const float* b_data = bias.data.data();
 
+        #pragma omp parallel for collapse(4)
         for (int n = 0; n < N; ++n)
             for (int f = 0; f < F; ++f)
                 for (int h = 0; h < Oh; ++h)
@@ -130,11 +131,14 @@ public:
         float* bias_grad_data = bias_grad.data.data();
         const float* filt_data = filters.data.data();
 
+        #pragma omp parallel for collapse(4)
         for (int n = 0; n < N; ++n)
             for (int f = 0; f < F; ++f)
                 for (int h = 0; h < Oh; ++h)
                     for (int w = 0; w < Ow; ++w) {
                         float d_out = gradz_data[((n * F + f) * Oh + h) * Ow + w];
+
+                        #pragma omp atomic
                         bias_grad_data[f] += d_out;
 
                         for (int c = 0; c < C; ++c)
@@ -144,17 +148,34 @@ public:
                                     int iw = w * stride + kw;
                                     int in_idx = ((n * C + c) * Hp + ih) * Wp + iw;
                                     int filt_idx = ((f * C + c) * K + kh) * Kw + kw;
-                                    filt_grad_data[filt_idx] += in_data[in_idx] * d_out;
-                                    grad_in_data[in_idx] += filt_data[filt_idx] * d_out;
+
+                                    float in_val = in_data[in_idx];
+                                    float filt_val = filt_data[filt_idx];
+
+                                    #pragma omp atomic
+                                    filt_grad_data[filt_idx] += in_val * d_out;
+
+                                    #pragma omp atomic
+                                    grad_in_data[in_idx] += filt_val * d_out;
                                 }
                     }
 
         return grad_input.unpad(computed_padding);
     }
 
+    void clear_cache() override {
+        input_cache.clear();
+        z_cache.clear();
+        a_cache.clear();
+        filters_grad.clear();
+        bias_grad.clear();
+    }
+
     void update_weights(Optimizer* optimizer) override {
         optimizer->update(filters, filters_grad);
         optimizer->update(bias, bias_grad);
+        filters_grad.clear();
+        bias_grad.clear();
     }
 
     size_t num_params() const override {

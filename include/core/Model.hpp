@@ -52,6 +52,16 @@ public:
         logger = log;
     }
 
+    void summary() const {
+        std::cout << "🧠 Modelo resumen:\n";
+        std::cout << " - Número total de parámetros: " << num_params() << "\n";
+        std::cout << " - Capas (" << layers.size() << "):\n";
+        for (size_t i = 0; i < layers.size(); ++i) {
+            std::cout << "   [" << i << "] " << typeid(*layers[i]).name() << "\n";
+        }
+    }
+
+
     Tensor forward(const Tensor& input, bool training = false) {
         Tensor current = input;
         for (auto& layer : layers) {
@@ -97,6 +107,11 @@ public:
 
             // Forward pass
             Tensor y_pred = forward(X_batch, false);
+            // 🔥 Liberar caché
+            for (auto& layer : layers) {
+                layer->clear_cache();
+            }
+
 
             // Compute loss
             eval_loss += loss->compute(y_pred, y_batch);
@@ -193,6 +208,11 @@ public:
                 for (auto& layer : layers) {
                     layer->update_weights(optimizer.get());
                 }
+
+                // 🔥 Clear caches después del backward y update
+                for (auto& layer : layers) {
+                    layer->clear_cache();
+                }
             }
 
             // Average metrics over batches
@@ -235,201 +255,6 @@ public:
         }
     }
 
-
-    void print_tensor_shape(const Tensor& tensor) const {
-        std::cout << "🔢 Shape: (";
-        for (size_t i = 0; i < tensor.shape.size(); ++i) {
-            std::cout << tensor.shape[i];
-            if (i < tensor.shape.size() - 1)
-                std::cout << ", ";
-        }
-        std::cout << ")\n";
-    }
-
-    void print_tensor_matrix(const Tensor& tensor) const {
-        const auto& data = tensor.data;
-        const auto& shape = tensor.shape;
-
-        if (shape.size() == 4) {
-            int N = shape[0], C = shape[1], H = shape[2], W = shape[3];
-            for (int n = 0; n < N; ++n) {
-                for (int c = 0; c < C; ++c) {
-                    std::cout << "🖼️ Sample " << n << ", canal " << c << ":\n";
-                    for (int h = 0; h < H; ++h) {
-                        for (int w = 0; w < W; ++w) {
-                            int idx = n * C * H * W + c * H * W + h * W + w;
-                            std::cout << data[idx] << "\t";
-                        }
-                        std::cout << "\n";
-                    }
-                }
-            }
-        } else if (shape.size() == 2) {
-            int N = shape[0], F = shape[1];
-            for (int n = 0; n < N; ++n) {
-                std::cout << "🧾 Sample " << n << " (Flatten): ";
-                for (int f = 0; f < F; ++f) {
-                    int idx = n * F + f;
-                    std::cout << data[idx] << " ";
-                }
-                std::cout << "\n";
-            }
-        } else if (shape.size() == 1) {
-            std::cout << "📤 Vector plano: ";
-            for (int i = 0; i < shape[0]; ++i) {
-                std::cout << data[i] << " ";
-            }
-            std::cout << "\n";
-        } else {
-            std::cout << "⚠️  No se soporta impresión para tensores con " << shape.size() << " dimensiones.\n";
-        }
-    }
-
-
-
-
-     void debug_pipeline_demo(const Tensor& input) {
-        Tensor current = input;
-
-        std::cout << "📥 Entrada:\n";
-        current.print_shape();
-        current.print_matrix();
-
-        for (size_t i = 0; i < layers.size(); ++i) {
-            std::cout << "\n➡️ Paso por capa " << i << ": " << typeid(*layers[i]).name() << "\n";
-            current = layers[i]->forward(current);
-            current.print_shape();
-            current.print_matrix();
-        }
-
-        std::cout << "\n✅ Resultado final\n";
-        current.print_shape();
-        current.print_matrix();
-    }
-
-
-
-    void fit2(const Tensor& X, const Tensor& y, int epochs, int batch_size,
-            const Tensor* X_val = nullptr, const Tensor* y_val = nullptr) {
-
-        int num_samples = X.shape[0];
-
-        for (int epoch = 0; epoch < epochs; ++epoch) {
-            std::cout << "\n🔁 Epoch " << (epoch + 1) << "/" << epochs << std::endl;
-            float total_loss = 0.0f;
-            std::vector<float> total_metrics(metrics.size(), 0.0f);
-            int batches = 0;
-
-            for (int i = 0; i < num_samples; i += batch_size) {
-                std::cout << "  📦 Procesando batch desde índice " << i << std::endl;
-
-                int end = std::min(i + batch_size, num_samples);
-                Tensor X_batch = X.slice(i, end);
-                Tensor y_batch = y.slice(i, end);
-
-                // --- Mostrar input ---
-                std::cout << "    🔎 Input X_batch:\n";
-                print_tensor_shape(X_batch);
-                print_tensor_matrix(X_batch);
-
-                // --- Forward ---
-                std::cout << "    ➡️  Forward..." << std::endl;
-                Tensor out = X_batch;
-                for (size_t l = 0; l < layers.size(); ++l) {
-                    std::cout << "      🔹 Layer " << l << ": " << typeid(*layers[l]).name() << std::endl;
-                    out = layers[l]->forward(out);
-                }
-                std::cout << "    ✅ Forward terminado" << std::endl;
-
-                std::cout << "    🧮 Output del modelo:\n";
-                print_tensor_shape(out);
-                print_tensor_matrix(out);
-
-                // --- Loss ---
-                std::cout << "    📉 Calculando pérdida..." << std::endl;
-                float loss_value = loss->compute(out, y_batch);
-                total_loss += loss_value;
-                std::cout << "    ✅ Pérdida: " << loss_value << std::endl;
-
-                // --- Métricas ---
-                for (size_t m = 0; m < metrics.size(); ++m) {
-                    float metric_val = metrics[m]->compute(y_batch, out);
-                    total_metrics[m] += metric_val;
-                    std::cout << "    📊 Métrica[" << m << "]: " << metric_val << std::endl;
-                }
-
-                batches++;
-
-                // --- Backward ---
-                std::cout << "    🔁 Backward..." << std::endl;
-                Tensor grad = loss->gradient(out, y_batch);
-                for (auto it = layers.rbegin(); it != layers.rend(); ++it) {
-                    grad = (*it)->backward(grad);
-                }
-                std::cout << "    ✅ Backward terminado" << std::endl;
-
-                // --- Update ---
-                std::cout << "    🛠️  Actualizando pesos..." << std::endl;
-                for (auto& layer : layers) {
-                    layer->update_weights(optimizer.get());
-                }
-                std::cout << "    ✅ Pesos actualizados" << std::endl;
-            }
-
-            float avg_loss = total_loss / batches;
-            std::vector<float> avg_metrics;
-            for (float val : total_metrics)
-                avg_metrics.push_back(val / batches);
-
-            // --- Validación ---
-            float val_loss = -1.0f;
-            std::vector<float> val_metrics(metrics.size(), -1.0f);
-
-            if (X_val && y_val) {
-                std::cout << "  🧪 Evaluando en datos de validación..." << std::endl;
-                Tensor val_out = *X_val;
-                for (auto& layer : layers)
-                    val_out = layer->forward(val_out);
-
-                std::cout << "  🔍 Output de validación:\n";
-                print_tensor_shape(val_out);
-                print_tensor_matrix(val_out);
-
-                val_loss = loss->compute(val_out, *y_val);
-                for (size_t m = 0; m < metrics.size(); ++m)
-                    val_metrics[m] = metrics[m]->compute(*y_val, val_out);
-
-                std::cout << "  ✅ Val loss: " << val_loss << std::endl;
-                for (size_t m = 0; m < metrics.size(); ++m)
-                    std::cout << "  📊 Val Métrica[" << m << "]: " << val_metrics[m] << std::endl;
-            }
-
-            // --- Logging final de la época ---
-            if (logger) {
-                std::cout << "📈 Epoch " << epoch + 1 << "/" << epochs
-                        << " - Loss: " << avg_loss;
-                for (size_t m = 0; m < metrics.size(); ++m)
-                    std::cout << " - " << typeid(*metrics[m]).name() << ": " << avg_metrics[m];
-                if (X_val && y_val) {
-                    std::cout << " - Val Loss: " << val_loss;
-                    for (size_t m = 0; m < metrics.size(); ++m)
-                        std::cout << " - Val " << typeid(*metrics[m]).name() << ": " << val_metrics[m];
-                }
-                std::cout << std::endl;
-            } else {
-                std::cout << "📈 Epoch " << epoch + 1 << "/" << epochs
-                        << " - Loss: " << avg_loss;
-                for (size_t m = 0; m < metrics.size(); ++m)
-                    std::cout << " - " << typeid(*metrics[m]).name() << ": " << avg_metrics[m];
-                if (X_val && y_val) {
-                    std::cout << " - Val Loss: " << val_loss;
-                    for (size_t m = 0; m < metrics.size(); ++m)
-                        std::cout << " - Val " << typeid(*metrics[m]).name() << ": " << val_metrics[m];
-                }
-                std::cout << std::endl;
-            }
-        }
-    }
 
 
 
